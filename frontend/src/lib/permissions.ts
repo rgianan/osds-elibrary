@@ -28,6 +28,8 @@ export type Permissions = {
   viewAuditLog: boolean;
   /** Reconciling the library against Drive — Admin only. */
   viewLibraryHealth: boolean;
+  /** Editing the filing tree itself — Admin only. */
+  manageCategories: boolean;
   openSettings: boolean;
 };
 
@@ -41,6 +43,7 @@ export function getPermissions(user: CurrentUser): Permissions {
     manageUsers: admin,
     viewAuditLog: admin,
     viewLibraryHealth: admin,
+    manageCategories: admin,
     openSettings: admin,
   };
 }

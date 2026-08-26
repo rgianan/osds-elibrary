@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { ChevronDown, ChevronRight, Folder, FolderOpen, Library } from 'lucide-react';
-import { CATEGORY_TREE, MONTHS, isWithinPath, joinPath, levelsForPath, type CategoryNode } from '@/lib/categories';
+import { MONTHS, categoryTreeNodes, isWithinPath, joinPath, levelsForPath, type CategoryNode } from '@/lib/categories';
 import { cn } from '@/lib/utils';
 
 export type LibrarySelection = {
@@ -47,7 +47,7 @@ export function CategorySidebar({ selection, onSelect, years, countFor }: Props)
         <Count value={countFor({ path: '', year: '', month: '' })} />
       </button>
       <div className="my-1 border-t border-border" />
-      {CATEGORY_TREE.map((node) => (
+      {categoryTreeNodes().map((node) => (
         <TreeNode
           key={node.label}
           node={node}

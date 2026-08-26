@@ -1,4 +1,5 @@
 ﻿import type { AskResult, AuditEntry, CurrentUser, DocumentUploadPayload, LibraryDocument, Tag, UserAccount } from '@/types';
+import type { CategoryRecord } from '@/lib/categories';
 import { ADMIN_HOST_EMAIL, isAllowedDomain, roleForEmail } from '@/lib/permissions';
 import { normalizeEmail } from '@/lib/utils';
 
@@ -182,13 +183,134 @@ function assertCanModifyDocument(existing: LibraryDocument) {
   }
 }
 
+/**
+ * Mirrors the seed written to the Categories sheet, so dev exercises the same tree the backend
+ * builds. Paths are computed here the same way — parent chain joined with "::".
+ */
+const DEFAULT_CATEGORIES: { label: string; parent: string; levels: string; aliases: string }[] = [
+  { label: 'Issuances', parent: '', levels: 'year', aliases: 'issuance' },
+  { label: 'CHED Memorandum Orders', parent: 'Issuances', levels: 'year', aliases: 'cmo, memorandum order' },
+  { label: 'CHED Administrative Orders', parent: 'Issuances', levels: 'year', aliases: 'cao, ao, administrative order' },
+  { label: 'Joint Administrative Orders', parent: 'Issuances', levels: 'year', aliases: 'jao' },
+  { label: 'Joint Memorandum Circulars', parent: 'Issuances', levels: 'year', aliases: 'jmc' },
+  { label: 'Joint Advisories', parent: 'Issuances', levels: 'year', aliases: 'ja, joint advisory' },
+  { label: 'Memorandum from the Office of the Chairperson', parent: 'Issuances', levels: 'year', aliases: 'chairperson' },
+  { label: 'Memorandum from the Office of the Executive Director', parent: 'Issuances', levels: 'year', aliases: 'executive director' },
+  { label: 'Legal Bases', parent: '', levels: 'year', aliases: 'legal basis' },
+  { label: 'Significant Communication', parent: '', levels: 'year', aliases: '' },
+  { label: 'Physical and Financial Reports', parent: '', levels: 'year', aliases: 'financial and physical report, physical report, financial report' },
+  { label: 'CEB Matters', parent: '', levels: 'year,month', aliases: 'ceb' },
+  { label: 'Office Order/Memorandum', parent: '', levels: 'year', aliases: 'oo, office order' },
+  { label: 'Audit Query/Observation Memorandum', parent: '', levels: 'year', aliases: 'aom, aqom, audit observation memorandum, audit observation, audit query' },
+  { label: 'Budget', parent: '', levels: 'year', aliases: '' },
+  { label: 'Work and Financial Plan', parent: '', levels: 'year', aliases: 'wfp, work financial plan' },
+  { label: 'Reports', parent: '', levels: 'year', aliases: 'report' },
+  { label: 'Complaints', parent: '', levels: 'year', aliases: 'complaint' },
+  { label: 'Freedom of Information', parent: '', levels: 'year', aliases: 'foi' },
+  { label: 'Position Papers', parent: '', levels: 'year', aliases: 'position paper' },
+];
+
+let categories: CategoryRecord[] = (() => {
+  const idByLabel = new Map<string, string>();
+  return DEFAULT_CATEGORIES.map((entry, index) => {
+    const id = `CAT-${String(index + 1).padStart(6, '0')}`;
+    idByLabel.set(entry.label, id);
+    return {
+      category_id: id,
+      parent_id: entry.parent ? idByLabel.get(entry.parent) || '' : '',
+      label: entry.label,
+      levels: entry.levels,
+      aliases: entry.aliases,
+      sort_order: (index + 1) * 10,
+      path: entry.parent ? `${entry.parent}::${entry.label}` : entry.label,
+    };
+  });
+})();
+
+function categoryPathOf(record: { parent_id: string; label: string }): string {
+  const parent = categories.find((c) => c.category_id === record.parent_id);
+  return parent ? `${categoryPathOf(parent)}::${record.label}` : record.label;
+}
+
+/** Recomputes every path after a rename or reparent, exactly as the backend does. */
+function recomputeCategoryPaths() {
+  categories = categories.map((c) => ({ ...c, path: categoryPathOf(c) }));
+}
+
 export const mockApi = {
-  getBootstrap: async () => delay({ user: requireCurrentUser() }),
+  getBootstrap: async () => delay({ user: requireCurrentUser(), categories: clone(categories) }),
+
+  listCategories: async () => {
+    requireCurrentUser();
+    return delay(clone(categories));
+  },
+
+  saveCategory: async (payload: Partial<CategoryRecord>) => {
+    assertAdmin();
+    const label = String(payload.label || '').trim();
+    if (!label) throw new Error('Missing required fields: label');
+    if (label.includes('::')) throw new Error('A category name cannot contain "::".');
+    const parentId = String(payload.parent_id || '');
+    const levels = String(payload.levels || 'year').includes('month') ? 'year,month' : 'year';
+
+    const clash = categories.find((c) => c.parent_id === parentId
+      && c.label.toLowerCase() === label.toLowerCase()
+      && c.category_id !== payload.category_id);
+    if (clash) throw new Error(`A category named "${label}" already exists in that position.`);
+
+    if (payload.category_id) {
+      const existing = categories.find((c) => c.category_id === payload.category_id);
+      if (!existing) throw new Error('Category not found.');
+      if (parentId === existing.category_id) throw new Error('A category cannot be its own parent.');
+      const before = existing.path;
+      const updated: CategoryRecord = { ...existing, label, parent_id: parentId, levels, aliases: String(payload.aliases || '') };
+      categories = categories.map((c) => (c.category_id === updated.category_id ? updated : c));
+      recomputeCategoryPaths();
+      // Documents follow the rename, as they do on the server.
+      const after = categories.find((c) => c.category_id === updated.category_id)!.path;
+      if (before !== after) {
+        documents = documents.map((d) => (d.category_path === before ? { ...d, category_path: after } : d));
+      }
+      recordAudit('UPDATE_CATEGORY', 'Categories', updated.category_id, `${before} -> ${after}`);
+      return delay(clone(categories.find((c) => c.category_id === updated.category_id)!));
+    }
+
+    const created: CategoryRecord = {
+      category_id: nextId('CAT'),
+      parent_id: parentId,
+      label,
+      levels,
+      aliases: String(payload.aliases || ''),
+      sort_order: categories.reduce((max, c) => Math.max(max, c.sort_order), 0) + 10,
+      path: label,
+    };
+    categories = [...categories, created];
+    recomputeCategoryPaths();
+    recordAudit('CREATE_CATEGORY', 'Categories', created.category_id, label);
+    return delay(clone(categories.find((c) => c.category_id === created.category_id)!));
+  },
+
+  deleteCategory: async (categoryId: string) => {
+    assertAdmin();
+    const target = categories.find((c) => c.category_id === categoryId);
+    if (!target) return delay({ ok: true });
+    const children = categories.filter((c) => c.parent_id === target.category_id);
+    if (children.length) {
+      throw new Error(`"${target.label}" has ${children.length} subcategor${children.length === 1 ? 'y' : 'ies'}. Delete or move those first.`);
+    }
+    const held = documents.filter((d) => d.category_path === target.path).length;
+    if (held) {
+      throw new Error(`${held} document${held === 1 ? ' is' : 's are'} filed under "${target.label}". Move them to another category first, then delete it.`);
+    }
+    categories = categories.filter((c) => c.category_id !== categoryId);
+    recordAudit('DELETE_CATEGORY', 'Categories', categoryId, target.path);
+    return delay({ ok: true });
+  },
 
   /** Dev-only: lets the developer preview the app as any seeded account. Not exposed in GAS. */
   switchMockUser: async (email: string) => {
     currentEmail = email;
-    return delay({ user: requireCurrentUser() });
+    return delay({ user: requireCurrentUser(), categories: clone(categories) });
   },
   listMockUserEmails: async () => delay(users.map((row) => row.email)),
 
@@ -398,7 +520,21 @@ export const mockApi = {
 
   listUsers: async () => {
     assertAdmin();
-    return delay(clone(users));
+    // Two seeded OMS accounts so the merged list, the Source column, and the read-only rules are
+    // exercised in dev without a Supabase project.
+    const omsUsers: UserAccount[] = [
+      { user_id: '', name: 'Ana Reyes (OMS)', email: 'areyes@ched.gov.ph', active: 'TRUE', source: 'OMS', role: 'STAFF' },
+      { user_id: '', name: 'Ben Cruz (OMS)', email: 'bcruz@ched.gov.ph', active: 'TRUE', source: 'OMS', role: 'STAFF' },
+    ];
+    const byEmail = new Map<string, UserAccount>();
+    omsUsers.forEach((u) => byEmail.set(normalizeEmail(u.email), u));
+    // A local row always wins over the OMS entry for the same address.
+    users.forEach((u) => byEmail.set(normalizeEmail(u.email), { ...clone(u), source: 'LOCAL' }));
+
+    return delay({
+      users: [...byEmail.values()].sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase())),
+      oms: { configured: true, ok: true, stale: false, reason: 'LIVE', count: omsUsers.length },
+    });
   },
 
   saveUser: async (payload: Partial<UserAccount>) => {

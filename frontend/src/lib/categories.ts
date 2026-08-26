@@ -19,35 +19,61 @@ export type CategoryNode = {
   levels?: CategoryLevel[];
 };
 
-const YEAR: CategoryLevel[] = ['year'];
-const YEAR_MONTH: CategoryLevel[] = ['year', 'month'];
+/** One row of the Categories sheet, with its path already computed by the backend. */
+export type CategoryRecord = {
+  category_id: string;
+  parent_id: string;
+  label: string;
+  /** 'year' or 'year,month' */
+  levels: string;
+  /** Comma-separated extra search shorthands. The label's own words always match. */
+  aliases: string;
+  sort_order: number;
+  path: string;
+};
 
-export const CATEGORY_TREE: CategoryNode[] = [
-  {
-    label: 'Issuances',
-    children: [
-      { label: 'CHED Memorandum Orders', levels: YEAR },
-      { label: 'CHED Administrative Orders', levels: YEAR },
-      { label: 'Joint Administrative Orders', levels: YEAR },
-      { label: 'Joint Memorandum Circulars', levels: YEAR },
-      { label: 'Joint Advisories', levels: YEAR },
-      { label: 'Memorandum from the Office of the Chairperson', levels: YEAR },
-      { label: 'Memorandum from the Office of the Executive Director', levels: YEAR },
-    ],
-  },
-  { label: 'Legal Bases', levels: YEAR },
-  { label: 'Significant Communication', levels: YEAR },
-  { label: 'Physical and Financial Reports', levels: YEAR },
-  { label: 'CEB Matters', levels: YEAR_MONTH },
-  { label: 'Office Order/Memorandum', levels: YEAR },
-  { label: 'Audit Query/Observation Memorandum', levels: YEAR },
-  { label: 'Budget', levels: YEAR },
-  { label: 'Work and Financial Plan', levels: YEAR },
-  { label: 'Reports', levels: YEAR },
-  { label: 'Complaints', levels: YEAR },
-  { label: 'Freedom of Information', levels: YEAR },
-  { label: 'Position Papers', levels: YEAR },
-];
+/**
+ * The Administrator edits the taxonomy in the app, so the tree arrives from the backend at load
+ * rather than being compiled in.
+ *
+ * It is held in a module-level store, and the helpers below read it. That is deliberate: the tree is
+ * needed by the sidebar, breadcrumb, upload and move dialogs, and the search parser — threading it
+ * through all of them as a prop would be a large amount of plumbing for a value that is loaded once
+ * per session and never differs between callers. App.tsx calls setCategories() during bootstrap,
+ * before anything renders.
+ */
+let categoryRecords: CategoryRecord[] = [];
+let categoryTree: CategoryNode[] = [];
+
+function buildTree(records: CategoryRecord[]): CategoryNode[] {
+  const childrenOf = (parentId: string): CategoryNode[] =>
+    records
+      .filter((r) => r.parent_id === parentId)
+      .map((r) => {
+        const kids = childrenOf(r.category_id);
+        return {
+          label: r.label,
+          ...(kids.length
+            ? { children: kids }
+            : { levels: (r.levels.includes('month') ? ['year', 'month'] : ['year']) as CategoryLevel[] }),
+        };
+      });
+  return childrenOf('');
+}
+
+export function setCategories(records: CategoryRecord[]) {
+  categoryRecords = [...records];
+  categoryTree = buildTree(categoryRecords);
+}
+
+export function getCategoryRecords() {
+  return categoryRecords;
+}
+
+/** The tree as the UI consumes it. Empty until setCategories() has run. */
+export function categoryTreeNodes(): CategoryNode[] {
+  return categoryTree;
+}
 
 /**
  * Deliberately not "/" — one category is literally labelled "Office Order/Memorandum", so a slash
@@ -85,7 +111,7 @@ export function breadcrumbLabel(path: string, year?: string, month?: string) {
 /** Walks the tree and returns the node at `path`, or null when the path is unknown. */
 export function findNode(path: string): CategoryNode | null {
   const segments = splitPath(path);
-  let nodes = CATEGORY_TREE;
+  let nodes = categoryTree;
   let node: CategoryNode | null = null;
   for (const segment of segments) {
     const match = nodes.find((candidate) => candidate.label === segment);
@@ -116,7 +142,7 @@ export function leafPaths(): { path: string; label: string }[] {
       else out.push({ path: joinPath(next), label: next.join(' > ') });
     }
   };
-  walk(CATEGORY_TREE, []);
+  walk(categoryTree, []);
   return out;
 }
 

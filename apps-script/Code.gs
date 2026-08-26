@@ -21,6 +21,7 @@ const EL = Object.freeze({
   SHEETS: Object.freeze({
     USERS: 'Users',
     DOCUMENTS: 'Documents',
+    CATEGORIES: 'Categories',
     TAGS: 'Tags',
     AUDIT: 'Audit_Log',
   }),
@@ -31,6 +32,7 @@ const EL = Object.freeze({
       'file_id', 'file_url', 'file_name', 'mime_type', 'file_size',
       'uploaded_by', 'uploaded_by_name', 'date_uploaded', 'created_at', 'updated_at'
     ],
+    Categories: ['category_id', 'parent_id', 'label', 'levels', 'aliases', 'sort_order', 'created_at', 'updated_at'],
     Tags: ['tag_id', 'name', 'description', 'created_by', 'created_at', 'updated_at'],
     Audit_Log: ['audit_id', 'timestamp', 'actor_email', 'actor_name', 'action', 'sheet_name', 'record_id', 'details'],
   })
@@ -59,27 +61,35 @@ const FIRST_LIBRARY_YEAR = 1994;
  */
 const PATH_SEPARATOR = '::';
 
-const CATEGORY_LEVELS = Object.freeze({
-  'Issuances::CHED Memorandum Orders': ['year'],
-  'Issuances::CHED Administrative Orders': ['year'],
-  'Issuances::Joint Administrative Orders': ['year'],
-  'Issuances::Joint Memorandum Circulars': ['year'],
-  'Issuances::Joint Advisories': ['year'],
-  'Issuances::Memorandum from the Office of the Chairperson': ['year'],
-  'Issuances::Memorandum from the Office of the Executive Director': ['year'],
-  'Legal Bases': ['year'],
-  'Significant Communication': ['year'],
-  'Physical and Financial Reports': ['year'],
-  'CEB Matters': ['year', 'month'],
-  'Office Order/Memorandum': ['year'],
-  'Audit Query/Observation Memorandum': ['year'],
-  'Budget': ['year'],
-  'Work and Financial Plan': ['year'],
-  'Reports': ['year'],
-  'Complaints': ['year'],
-  'Freedom of Information': ['year'],
-  'Position Papers': ['year'],
-});
+/**
+ * Seed taxonomy, written to the Categories sheet on first setup. After that the SHEET is the source
+ * of truth and the Administrator edits it in the app — this array is only ever used to populate an
+ * empty sheet, so an existing deployment keeps its paths unchanged.
+ *
+ * `aliases` are extra search shorthands; the label's own words are always matched and need no entry.
+ */
+const DEFAULT_CATEGORIES = [
+  { label: 'Issuances', parent: '', levels: 'year', aliases: 'issuance' },
+  { label: 'CHED Memorandum Orders', parent: 'Issuances', levels: 'year', aliases: 'cmo, memorandum order' },
+  { label: 'CHED Administrative Orders', parent: 'Issuances', levels: 'year', aliases: 'cao, ao, administrative order' },
+  { label: 'Joint Administrative Orders', parent: 'Issuances', levels: 'year', aliases: 'jao' },
+  { label: 'Joint Memorandum Circulars', parent: 'Issuances', levels: 'year', aliases: 'jmc' },
+  { label: 'Joint Advisories', parent: 'Issuances', levels: 'year', aliases: 'ja, joint advisory' },
+  { label: 'Memorandum from the Office of the Chairperson', parent: 'Issuances', levels: 'year', aliases: 'chairperson' },
+  { label: 'Memorandum from the Office of the Executive Director', parent: 'Issuances', levels: 'year', aliases: 'executive director' },
+  { label: 'Legal Bases', parent: '', levels: 'year', aliases: 'legal basis' },
+  { label: 'Significant Communication', parent: '', levels: 'year', aliases: '' },
+  { label: 'Physical and Financial Reports', parent: '', levels: 'year', aliases: 'financial and physical report, physical report, financial report' },
+  { label: 'CEB Matters', parent: '', levels: 'year,month', aliases: 'ceb' },
+  { label: 'Office Order/Memorandum', parent: '', levels: 'year', aliases: 'oo, office order' },
+  { label: 'Audit Query/Observation Memorandum', parent: '', levels: 'year', aliases: 'aom, aqom, audit observation memorandum, audit observation, audit query' },
+  { label: 'Budget', parent: '', levels: 'year', aliases: '' },
+  { label: 'Work and Financial Plan', parent: '', levels: 'year', aliases: 'wfp, work financial plan' },
+  { label: 'Reports', parent: '', levels: 'year', aliases: 'report' },
+  { label: 'Complaints', parent: '', levels: 'year', aliases: 'complaint' },
+  { label: 'Freedom of Information', parent: '', levels: 'year', aliases: 'foi' },
+  { label: 'Position Papers', parent: '', levels: 'year', aliases: 'position paper' },
+];
 
 const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 
@@ -180,6 +190,8 @@ function seedELibrary() {
     }
   }
 
+  const seededCategories = seedCategories_();
+
   const tags = readRows_(EL.SHEETS.TAGS);
   if (!tags.some(function (t) { return norm_(t.name) === 'office of the director'; })) {
     appendRow_(EL.SHEETS.TAGS, {
@@ -200,7 +212,12 @@ function seedELibrary() {
     console.error('Could not sync the library folder access', err);
   }
 
-  return { ok: true, message: 'E-Library seeded. Administrator: ' + ADMIN_HOST_EMAIL + '. Drive: ' + sharing };
+  return {
+    ok: true,
+    message: 'E-Library seeded. Administrator: ' + ADMIN_HOST_EMAIL
+      + '. Categories: ' + (seededCategories ? seededCategories + ' created' : 'already present')
+      + '. Drive: ' + sharing,
+  };
 }
 
 // --- Bootstrap and stats ------------------------------------------------------------------
@@ -209,7 +226,285 @@ function seedELibrary() {
 // document list it already fetches, so doing it here would scan every Documents row on each load
 // for a result nothing displays.
 function getBootstrap() {
-  return { user: getCurrentUser_() };
+  const user = getCurrentUser_();
+  ensureLibraryAccess_(user.email);
+  // Categories ride along: the sidebar, breadcrumb, upload dialog and search all need the tree
+  // before anything can render, so fetching it separately would just add a round trip.
+  return { user: user, categories: listCategories() };
+}
+
+/**
+ * Grants Drive access to an account that arrived from OMS.
+ *
+ * Locally-added users get their Drive permission when the Administrator saves them, but OMS accounts
+ * never pass through saveUser — so without this a new hire could sign in, browse the library, and
+ * get "You need access" on every document until somebody remembered to press Sync Drive Access.
+ *
+ * Cached so this costs one Drive call per person per six hours rather than one per page load.
+ */
+function ensureLibraryAccess_(email) {
+  const target = norm_(email);
+  if (!target || !omsConfigured_()) return;
+
+  const cache = CacheService.getScriptCache();
+  const key = 'granted_' + target;
+  try {
+    if (cache.get(key)) return;
+  } catch (err) {}
+
+  // Local rows are already handled on save; only OMS-sourced accounts need this.
+  const entry = allowedUsers_().byEmail[target];
+  if (!entry || entry.source !== 'OMS') return;
+
+  grantLibraryAccess_(target);
+  try { cache.put(key, '1', 21600); } catch (err) {}
+}
+
+// --- Categories ------------------------------------------------------------------------------
+//
+// The taxonomy lives in the Categories sheet so the Administrator can change it without a deploy.
+// Every path is derived from the parent chain, joined with "::" — a label may itself contain "/"
+// (two of them do), which is exactly why the separator is not a slash.
+
+/** Rows decorated with their computed path, ordered for display. */
+function categoryRows_() {
+  const rows = readRows_(EL.SHEETS.CATEGORIES).filter(function (r) { return r.category_id && r.label; });
+  const byId = {};
+  rows.forEach(function (r) { byId[String(r.category_id)] = r; });
+
+  function pathOf(row, guard) {
+    if (guard > 10) return String(row.label); // defensive: a cycle must not hang the request
+    const parent = row.parent_id ? byId[String(row.parent_id)] : null;
+    return parent ? pathOf(parent, guard + 1) + PATH_SEPARATOR + String(row.label) : String(row.label);
+  }
+
+  const decorated = rows.map(function (r) {
+    return {
+      category_id: String(r.category_id),
+      parent_id: String(r.parent_id || ''),
+      label: String(r.label),
+      levels: String(r.levels || 'year'),
+      aliases: String(r.aliases || ''),
+      sort_order: Number(r.sort_order) || 0,
+      path: pathOf(r, 0),
+    };
+  });
+
+  decorated.sort(function (a, b) {
+    if (a.sort_order !== b.sort_order) return a.sort_order - b.sort_order;
+    return a.label.toLowerCase() < b.label.toLowerCase() ? -1 : 1;
+  });
+  return decorated;
+}
+
+/** Ids of categories that have at least one child. */
+function categoriesWithChildren_(rows) {
+  const parents = {};
+  rows.forEach(function (r) { if (r.parent_id) parents[r.parent_id] = true; });
+  return parents;
+}
+
+/**
+ * path -> ['year'] | ['year','month'] for every category that can actually hold a document.
+ *
+ * Grouping nodes are excluded on purpose: a category with children is a heading in the tree, not a
+ * filing destination. The UI only ever offers leaves, but this map is what the server validates
+ * against, and without the exclusion a direct API call could file a document under "Issuances" —
+ * where it would be invisible in the sidebar.
+ */
+function categoryLevels_() {
+  const rows = categoryRows_();
+  const parents = categoriesWithChildren_(rows);
+  const map = {};
+  rows.forEach(function (row) {
+    if (parents[row.category_id]) return;
+    map[row.path] = row.levels.indexOf('month') >= 0 ? ['year', 'month'] : ['year'];
+  });
+  return map;
+}
+
+function seedCategories_() {
+  if (readRows_(EL.SHEETS.CATEGORIES).length > 0) return 0;
+  const idByLabel = {};
+  DEFAULT_CATEGORIES.forEach(function (entry, index) {
+    const id = nextId_('CAT', EL.SHEETS.CATEGORIES, 'category_id');
+    idByLabel[entry.label] = id;
+    appendRow_(EL.SHEETS.CATEGORIES, {
+      category_id: id,
+      parent_id: entry.parent ? (idByLabel[entry.parent] || '') : '',
+      label: entry.label,
+      levels: entry.levels,
+      aliases: entry.aliases,
+      sort_order: (index + 1) * 10,
+      created_at: now_(),
+      updated_at: now_(),
+    });
+  });
+  return DEFAULT_CATEGORIES.length;
+}
+
+/**
+ * Any signed-in user: the tree drives the sidebar and the upload dialog.
+ *
+ * Self-heals an empty sheet with the seed taxonomy, the same way getSheet_ creates a missing sheet.
+ * That matters for a deployment upgrading from the hard-coded taxonomy: the Categories sheet is new
+ * and would otherwise be empty until somebody remembered to re-run setup, leaving no categories at
+ * all and every existing document orphaned.
+ */
+function listCategories() {
+  getCurrentUser_();
+  let rows = categoryRows_();
+  if (rows.length === 0) {
+    const lock = LockService.getScriptLock();
+    lock.waitLock(30000);
+    try {
+      if (categoryRows_().length === 0) seedCategories_();
+      rows = categoryRows_();
+    } finally {
+      lock.releaseLock();
+    }
+  }
+  return rows;
+}
+
+function saveCategory(payload) {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    payload = payload || {};
+    assertAdmin_();
+    requireFields_(payload, ['label']);
+
+    const label = String(payload.label).trim();
+    if (label.indexOf(PATH_SEPARATOR) >= 0) throw new Error('A category name cannot contain "' + PATH_SEPARATOR + '".');
+    const parentId = String(payload.parent_id || '');
+    const levels = String(payload.levels || 'year').indexOf('month') >= 0 ? 'year,month' : 'year';
+
+    const rows = categoryRows_();
+    const parent = parentId ? rows.filter(function (r) { return r.category_id === parentId; })[0] : null;
+    if (parentId && !parent) throw new Error('The parent category no longer exists.');
+
+    // Giving a category its first child turns it into a grouping node, which can no longer hold
+    // documents — so anything already filed there would become unreachable from the tree.
+    if (parent) {
+      const heldByParent = readRows_(EL.SHEETS.DOCUMENTS).filter(function (d) {
+        return String(d.category_path) === parent.path;
+      }).length;
+      const alreadyHasChildren = rows.some(function (r) { return r.parent_id === parent.category_id; });
+      if (heldByParent && !alreadyHasChildren) {
+        throw new Error('"' + parent.label + '" holds ' + heldByParent + ' document'
+          + (heldByParent === 1 ? '' : 's') + '. Move them before nesting a category under it, or it stops being a filing destination.');
+      }
+    }
+    // Sibling labels must be unique or two categories would share a path.
+    const clash = rows.filter(function (r) {
+      return r.parent_id === parentId
+        && norm_(r.label) === norm_(label)
+        && r.category_id !== String(payload.category_id || '');
+    })[0];
+    if (clash) throw new Error('A category named "' + label + '" already exists in that position.');
+
+    if (payload.category_id) {
+      const existing = rows.filter(function (r) { return r.category_id === String(payload.category_id); })[0];
+      if (!existing) throw new Error('Category not found.');
+      if (parentId === existing.category_id) throw new Error('A category cannot be its own parent.');
+
+      updateById_(EL.SHEETS.CATEGORIES, 'category_id', existing.category_id, {
+        label: label,
+        parent_id: parentId,
+        levels: levels,
+        aliases: String(payload.aliases || ''),
+        sort_order: Number(payload.sort_order) || existing.sort_order,
+        updated_at: now_(),
+      });
+
+      // Renaming changes the stored path of every document filed here (and under any child), so
+      // repoint them and move the Drive folder — otherwise they would silently drop out of the tree.
+      const renamed = existing.label !== label || existing.parent_id !== parentId;
+      let migration = '';
+      if (renamed) {
+        const after = categoryRows_().filter(function (r) { return r.category_id === existing.category_id; })[0];
+        migration = ' ' + repointDescendants_(existing, after).message;
+      }
+      audit_('UPDATE_CATEGORY', EL.SHEETS.CATEGORIES, existing.category_id, existing.path + ' -> ' + label + migration);
+      return categoryRows_().filter(function (r) { return r.category_id === existing.category_id; })[0];
+    }
+
+    const id = nextId_('CAT', EL.SHEETS.CATEGORIES, 'category_id');
+    const maxOrder = rows.reduce(function (max, r) { return Math.max(max, r.sort_order); }, 0);
+    appendRow_(EL.SHEETS.CATEGORIES, {
+      category_id: id,
+      parent_id: parentId,
+      label: label,
+      levels: levels,
+      aliases: String(payload.aliases || ''),
+      sort_order: Number(payload.sort_order) || maxOrder + 10,
+      created_at: now_(),
+      updated_at: now_(),
+    });
+    audit_('CREATE_CATEGORY', EL.SHEETS.CATEGORIES, id, label);
+    return categoryRows_().filter(function (r) { return r.category_id === id; })[0];
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/** After a rename or reparent, move the category and everything beneath it to its new path. */
+function repointDescendants_(before, after) {
+  if (!before || !after || before.path === after.path) return { moved: 0, message: '' };
+  const rowsAfter = categoryRows_();
+  const documents = readRows_(EL.SHEETS.DOCUMENTS);
+  let moved = 0;
+
+  // Map every descendant's old path to its new one, longest first so a parent rewrite cannot
+  // clobber a child's prefix.
+  const pairs = [{ from: before.path, to: after.path }];
+  rowsAfter.forEach(function (r) {
+    if (r.path.indexOf(after.path + PATH_SEPARATOR) === 0) {
+      pairs.push({ from: before.path + r.path.slice(after.path.length), to: r.path });
+    }
+  });
+
+  pairs.forEach(function (pair) {
+    documents.forEach(function (doc) {
+      if (String(doc.category_path) !== pair.from) return;
+      updateById_(EL.SHEETS.DOCUMENTS, 'document_id', doc.document_id, { category_path: pair.to, updated_at: now_() });
+      moveDriveFileTo_(doc.file_id, documentFolderFor_(pair.to, doc.year, doc.month));
+      moved++;
+    });
+  });
+
+  return { moved: moved, message: '(' + moved + ' document' + (moved === 1 ? '' : 's') + ' refiled)' };
+}
+
+function deleteCategory(categoryId) {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    assertAdmin_();
+    const rows = categoryRows_();
+    const target = rows.filter(function (r) { return r.category_id === String(categoryId); })[0];
+    if (!target) return { ok: true };
+
+    const children = rows.filter(function (r) { return r.parent_id === target.category_id; });
+    if (children.length) {
+      throw new Error('"' + target.label + '" has ' + children.length + ' subcategor'
+        + (children.length === 1 ? 'y' : 'ies') + '. Delete or move those first.');
+    }
+
+    // Blocked rather than cascading: documents must never be orphaned or silently hidden.
+    const held = readRows_(EL.SHEETS.DOCUMENTS).filter(function (d) { return String(d.category_path) === target.path; }).length;
+    if (held) {
+      throw new Error(held + ' document' + (held === 1 ? ' is' : 's are') + ' filed under "' + target.label
+        + '". Move them to another category first, then delete it.');
+    }
+
+    deleteById_(EL.SHEETS.CATEGORIES, 'category_id', target.category_id);
+    audit_('DELETE_CATEGORY', EL.SHEETS.CATEGORIES, target.category_id, target.path);
+    return { ok: true };
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 // --- Documents ----------------------------------------------------------------------------
@@ -228,7 +523,7 @@ function saveDocument(payload) {
 
     requireFields_(payload, ['name', 'category_path', 'year']);
     const categoryPath = String(payload.category_path);
-    const levels = CATEGORY_LEVELS[categoryPath];
+    const levels = categoryLevels_()[categoryPath];
     if (!levels) throw new Error('Unknown category: ' + categoryPath);
 
     const year = String(payload.year).trim();
@@ -328,7 +623,7 @@ function moveDocument(documentId, categoryPath, year, month) {
     assertCanModifyDocument_(existing, ctx);
 
     const targetPath = String(categoryPath || '');
-    const levels = CATEGORY_LEVELS[targetPath];
+    const levels = categoryLevels_()[targetPath];
     if (!levels) throw new Error('Unknown category: ' + targetPath);
 
     const targetYear = String(year || '').trim();
@@ -487,7 +782,7 @@ function renameCategoryPath(oldPath, newPath) {
     const from = String(oldPath || '');
     const to = String(newPath || '');
     if (!from || !to) throw new Error('Both the old and new category paths are required.');
-    if (!CATEGORY_LEVELS[to]) throw new Error('The new path is not a category in this build: ' + to);
+    if (!categoryLevels_()[to]) throw new Error('The new path is not a category: ' + to);
 
     const fromSegments = from.split(PATH_SEPARATOR);
     const toSegments = to.split(PATH_SEPARATOR);
@@ -793,11 +1088,18 @@ function syncLibraryFolderAccess_() {
     console.error('Could not set the library folder to private', err);
   }
 
+  // Drive access must follow the same directory as sign-in, OMS accounts included.
   const allowed = {};
-  readRows_(EL.SHEETS.USERS).forEach(function (u) {
-    if (truthy_(u.active) && u.email) allowed[norm_(u.email)] = true;
+  const directory = allowedUsers_();
+  Object.keys(directory.byEmail).forEach(function (email) {
+    if (directory.byEmail[email].active === 'TRUE') allowed[email] = true;
   });
   allowed[ADMIN_HOST_EMAIL] = true;
+
+  // A failed OMS read would otherwise look like "everyone left" and strip their Drive access.
+  if (omsConfigured_() && !directory.oms.ok && directory.oms.users.length === 0) {
+    return { ok: false, message: 'Skipped: the OMS user directory could not be read (' + directory.oms.reason + '). Nothing was changed.' };
+  }
 
   // The owner cannot be removed and always retains access.
   let ownerEmail = '';
@@ -815,8 +1117,11 @@ function syncLibraryFolderAccess_() {
     if (current[email] || email === ownerEmail) return;
     try { addViewerSilently_(folder, email); added++; } catch (err) { console.error('addViewer failed for ' + email, err); }
   });
+  // Skip removals on a truncated directory read: the missing people are missing from the response,
+  // not from the office, and revoking them would be a silent mass lockout.
+  const safeToRemove = !directory.oms.truncated;
   Object.keys(current).forEach(function (email) {
-    if (allowed[email] || email === ownerEmail) return;
+    if (allowed[email] || email === ownerEmail || !safeToRemove) return;
     try { folder.removeViewer(email); removed++; } catch (err) { console.error('removeViewer failed for ' + email, err); }
   });
 
@@ -828,6 +1133,15 @@ function syncLibraryFolderAccess_() {
       const email = norm_(e.getEmail());
       if (!allowed[email] && email !== ownerEmail) strayEditors.push(email);
     });
+  } catch (err) {}
+
+  // Record everyone as granted so the per-sign-in top-up in ensureLibraryAccess_ does not spend a
+  // redundant Drive call on each of them. Without this a 61-person office would make ~250 pointless
+  // Drive calls a day re-granting access people already have.
+  try {
+    const stamps = {};
+    Object.keys(allowed).forEach(function (email) { stamps['granted_' + email] = '1'; });
+    if (Object.keys(stamps).length) CacheService.getScriptCache().putAll(stamps, 21600);
   } catch (err) {}
 
   return {
@@ -1404,13 +1718,37 @@ function listAuditLog(limit, offset) {
   return { entries: entries, total: total };
 }
 
+/**
+ * Everyone with access, from both sources, so the Administrator sees one list rather than having to
+ * hold the union in their head. OMS rows carry no user_id and are not editable here — they are
+ * changed in the Office Management System.
+ */
 function listUsers() {
   assertAdmin_();
-  return readRows_(EL.SHEETS.USERS).map(function (row) {
-    row.active = truthy_(row.active) ? 'TRUE' : 'FALSE';
-    row.role = norm_(row.email) === ADMIN_HOST_EMAIL ? 'ADMIN' : 'STAFF';
-    return row;
+  const allowed = allowedUsers_();
+  const rows = Object.keys(allowed.byEmail).map(function (email) {
+    const u = allowed.byEmail[email];
+    return {
+      user_id: u.user_id || '',
+      name: u.name,
+      email: u.email,
+      active: u.active,
+      source: u.source,
+      role: email === ADMIN_HOST_EMAIL ? 'ADMIN' : 'STAFF',
+    };
   });
+  rows.sort(function (a, b) { return a.name.toLowerCase() < b.name.toLowerCase() ? -1 : 1; });
+
+  return {
+    users: rows,
+    oms: {
+      configured: omsConfigured_(),
+      ok: allowed.oms.ok,
+      stale: allowed.oms.stale,
+      reason: allowed.oms.reason,
+      count: allowed.oms.users.length,
+    },
+  };
 }
 
 function saveUser(payload) {
@@ -1481,7 +1819,14 @@ function deleteUser(userId) {
     if (norm_(row.email) === ADMIN_HOST_EMAIL) throw new Error('The Administrator account cannot be deleted.');
     deleteById_(EL.SHEETS.USERS, 'user_id', userId);
     audit_('DELETE_USER', EL.SHEETS.USERS, userId, row.email);
-    revokeLibraryAccess_(row.email);
+
+    // Deleting a local row is not always a revocation: if the address is still an active account in
+    // the Office Management System, removing the override hands access back rather than taking it
+    // away, so re-read the merged directory instead of assuming.
+    const stillAllowed = allowedUsers_().byEmail[norm_(row.email)];
+    if (stillAllowed && stillAllowed.active === 'TRUE') grantLibraryAccess_(row.email);
+    else revokeLibraryAccess_(row.email);
+
     return { ok: true };
   } finally {
     lock.releaseLock();
@@ -1495,6 +1840,147 @@ function decorateUser_(row) {
   return row;
 }
 
+// --- Office Management System user directory ------------------------------------------------
+//
+// The same staff use both systems, so OMS is the source of truth for who may sign in. It moved to
+// Supabase, which exposes PostgREST, so this is an HTTPS GET rather than a spreadsheet read.
+//
+// Script Properties:
+//   OMS_SUPABASE_URL   = https://<project-ref>.supabase.co
+//   OMS_SUPABASE_KEY   = an API key that can read the resource below (never reaches the browser)
+//   OMS_USERS_RESOURCE = users            (optional; point at a narrow view instead — see README)
+//
+// Prefer a read-only view exposing just email/name/active over the raw table: the E-Library has no
+// business being able to read personnel records, and a view survives OMS schema changes.
+
+const OMS_USERS_CACHE_KEY = 'oms_users_v1';
+const OMS_USERS_CACHE_TTL = 300; // seconds
+const OMS_USERS_FETCH_LIMIT = 2000;
+
+function omsConfig_() {
+  const props = PropertiesService.getScriptProperties();
+  return {
+    url: String(props.getProperty('OMS_SUPABASE_URL') || '').replace(/\/+$/, ''),
+    key: props.getProperty('OMS_SUPABASE_KEY') || '',
+    resource: props.getProperty('OMS_USERS_RESOURCE') || 'users',
+  };
+}
+
+function omsConfigured_() {
+  const cfg = omsConfig_();
+  return !!(cfg.url && cfg.key);
+}
+
+/**
+ * Active OMS accounts, cached briefly.
+ *
+ * Never throws: if OMS is unreachable the library must keep working on its local list rather than
+ * locking everyone out because another system is down. `stale` says the answer came from cache
+ * after a failed refresh, so the UI can say so.
+ */
+function fetchOmsUsers_(forceRefresh) {
+  const cfg = omsConfig_();
+  if (!cfg.url || !cfg.key) return { ok: false, reason: 'NOT_CONFIGURED', users: [], stale: false, truncated: false };
+
+  const cache = CacheService.getScriptCache();
+  if (!forceRefresh) {
+    try {
+      const hit = cache.get(OMS_USERS_CACHE_KEY);
+      if (hit) return { ok: true, reason: 'CACHE', users: JSON.parse(hit), stale: false, truncated: false };
+    } catch (err) {}
+  }
+
+  try {
+    const url = cfg.url + '/rest/v1/' + encodeURIComponent(cfg.resource)
+      + '?select=email,name,active&limit=' + OMS_USERS_FETCH_LIMIT;
+    const response = UrlFetchApp.fetch(url, {
+      method: 'get',
+      muteHttpExceptions: true,
+      headers: { apikey: cfg.key, Authorization: 'Bearer ' + cfg.key, Accept: 'application/json' },
+    });
+    const code = response.getResponseCode();
+    const body = response.getContentText();
+    if (code !== 200) throw new Error('HTTP ' + code + ': ' + body.slice(0, 300));
+
+    const returned = JSON.parse(body) || [];
+    const users = returned
+      .filter(function (row) { return row && row.email && truthy_(row.active); })
+      .map(function (row) { return { email: norm_(row.email), name: String(row.name || ''), active: 'TRUE' }; });
+
+    // A response exactly the size of the cap is the signature of a truncated read — PostgREST also
+    // enforces its own db-max-rows, which can be lower than what we ask for. Acting on a partial
+    // directory would revoke everyone missing from it, so the flag makes the sync refuse removals.
+    const truncated = returned.length >= OMS_USERS_FETCH_LIMIT;
+
+    const encoded = JSON.stringify(users);
+    if (encoded.length < 90000) {
+      try { cache.put(OMS_USERS_CACHE_KEY, encoded, OMS_USERS_CACHE_TTL); } catch (err) {}
+    }
+    return { ok: true, reason: 'LIVE', users: users, stale: false, truncated: truncated };
+  } catch (err) {
+    console.error('Could not read the OMS user directory', err);
+    // Serve the last known list rather than locking everyone out.
+    try {
+      const hit = cache.get(OMS_USERS_CACHE_KEY);
+      if (hit) return { ok: false, reason: 'STALE: ' + err.message, users: JSON.parse(hit), stale: true, truncated: false };
+    } catch (inner) {}
+    return { ok: false, reason: String(err.message || err), users: [], stale: false, truncated: false };
+  }
+}
+
+/**
+ * Everyone who may sign in: active OMS accounts plus the local override list.
+ *
+ * A local row always wins over the OMS entry for the same address, so the Administrator can grant
+ * access to somebody OMS does not know about, and can revoke someone OMS still lists.
+ */
+function allowedUsers_() {
+  const byEmail = {};
+
+  const oms = fetchOmsUsers_();
+  oms.users.forEach(function (u) {
+    byEmail[u.email] = { email: u.email, name: u.name, active: 'TRUE', source: 'OMS' };
+  });
+
+  readRows_(EL.SHEETS.USERS).forEach(function (u) {
+    if (!u.email) return;
+    const email = norm_(u.email);
+    byEmail[email] = {
+      email: email,
+      name: String(u.name || (byEmail[email] ? byEmail[email].name : '')),
+      active: truthy_(u.active) ? 'TRUE' : 'FALSE',
+      source: 'LOCAL',
+      user_id: u.user_id,
+    };
+  });
+
+  return { byEmail: byEmail, oms: oms };
+}
+
+/** Admin-only diagnostic for the OMS link. Never returns the key itself. */
+function checkOmsConnection() {
+  assertSetupAccess_();
+  const cfg = omsConfig_();
+  const result = {
+    configured: omsConfigured_(),
+    url: cfg.url || '(not set)',
+    resource: cfg.resource,
+    key_present: !!cfg.key,
+    key_length: cfg.key.length,
+  };
+  if (!result.configured) {
+    result.status = 'Set OMS_SUPABASE_URL and OMS_SUPABASE_KEY to link the OMS user directory.';
+    console.log(result);
+    return result;
+  }
+  const fetched = fetchOmsUsers_(true);
+  result.status = fetched.ok
+    ? 'OK — read ' + fetched.users.length + ' active account' + (fetched.users.length === 1 ? '' : 's') + ' from OMS.'
+    : 'FAILED: ' + fetched.reason;
+  console.log(result);
+  return result;
+}
+
 // --- Identity and access ------------------------------------------------------------------
 
 function getCurrentUser_() {
@@ -1506,12 +1992,15 @@ function getCurrentUser_() {
     throw new Error('Access denied. The E-Library is limited to @' + ALLOWED_EMAIL_DOMAIN + ' accounts: ' + email);
   }
 
-  const users = readRows_(EL.SHEETS.USERS);
-  if (users.length === 0) throw new Error('No users configured. Run seedELibrary() first.');
+  const allowed = allowedUsers_();
+  const user = allowed.byEmail[email];
 
-  const user = users.filter(function (u) { return norm_(u.email) === email; })[0];
-  if (!user) throw new Error('Access denied. ' + email + ' is not in the E-Library user list. Ask the Administrator to add your account.');
-  if (!truthy_(user.active)) throw new Error('Access denied. The account ' + email + ' is inactive.');
+  if (!user) {
+    throw new Error(omsConfigured_()
+      ? 'Access denied. ' + email + ' is not an active account in the Office Management System, and has not been added to the E-Library directly.'
+      : 'Access denied. ' + email + ' is not in the E-Library user list. Ask the Administrator to add your account.');
+  }
+  if (user.active !== 'TRUE') throw new Error('Access denied. The account ' + email + ' is inactive.');
 
   return {
     email: email,

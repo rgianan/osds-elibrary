@@ -86,12 +86,30 @@ export type AuditPage = {
 };
 
 export type UserAccount = {
+  /** Empty for accounts that come from the Office Management System — those have no local row. */
   user_id: string;
   name: string;
   email: string;
   /** 'TRUE' | 'FALSE' — stored as a string because Sheets round-trips booleans inconsistently. */
   active: string;
+  /** Where the account came from. OMS rows are managed in the Office Management System. */
+  source?: 'OMS' | 'LOCAL';
   role?: Role;
   created_at?: string;
   updated_at?: string;
+};
+
+/** Health of the link to the Office Management System's user directory. */
+export type OmsDirectoryStatus = {
+  configured: boolean;
+  ok: boolean;
+  /** True when the list came from cache after a failed refresh. */
+  stale: boolean;
+  reason: string;
+  count: number;
+};
+
+export type UserDirectory = {
+  users: UserAccount[];
+  oms: OmsDirectoryStatus;
 };

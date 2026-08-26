@@ -1,5 +1,6 @@
 import { mockApi } from '@/lib/mockApi';
-import type { AskResult, AuditPage, CurrentUser, DocumentUploadPayload, IntegrityReport, LibraryDocument, Tag, UserAccount } from '@/types';
+import type { CategoryRecord } from '@/lib/categories';
+import type { AskResult, AuditPage, CurrentUser, DocumentUploadPayload, IntegrityReport, LibraryDocument, Tag, UserAccount, UserDirectory } from '@/types';
 
 declare global {
   interface Window {
@@ -55,11 +56,18 @@ function callDelete(remoteName: string, mockCall: () => Promise<{ ok: boolean }>
   return promise.then(throwIfNotOk);
 }
 
-export type Bootstrap = { user: CurrentUser };
+export type Bootstrap = { user: CurrentUser; categories: CategoryRecord[] };
 
 export const api = {
   getBootstrap: (): Promise<Bootstrap> =>
     isGasRuntime() ? runGas<Bootstrap>('getBootstrap') : mockApi.getBootstrap(),
+
+  listCategories: (): Promise<CategoryRecord[]> =>
+    isGasRuntime() ? runGas<CategoryRecord[]>('listCategories') : mockApi.listCategories(),
+  saveCategory: (payload: Partial<CategoryRecord>): Promise<CategoryRecord> =>
+    isGasRuntime() ? runGas<CategoryRecord>('saveCategory', payload) : mockApi.saveCategory(payload),
+  deleteCategory: (categoryId: string): Promise<{ ok: boolean }> =>
+    callDelete('deleteCategory', () => mockApi.deleteCategory(categoryId), categoryId),
 
   listDocuments: (): Promise<LibraryDocument[]> =>
     isGasRuntime() ? runGas<LibraryDocument[]>('listDocuments') : mockApi.listDocuments(),
@@ -91,7 +99,7 @@ export const api = {
   listAuditLog: (limit?: number, offset?: number): Promise<AuditPage> =>
     isGasRuntime() ? runGas<AuditPage>('listAuditLog', limit, offset) : mockApi.listAuditLog(limit, offset),
 
-  listUsers: (): Promise<UserAccount[]> => (isGasRuntime() ? runGas<UserAccount[]>('listUsers') : mockApi.listUsers()),
+  listUsers: (): Promise<UserDirectory> => (isGasRuntime() ? runGas<UserDirectory>('listUsers') : mockApi.listUsers()),
   saveUser: (payload: Partial<UserAccount>): Promise<UserAccount> =>
     isGasRuntime() ? runGas<UserAccount>('saveUser', payload) : mockApi.saveUser(payload),
   deleteUser: (userId: string): Promise<{ ok: boolean }> =>

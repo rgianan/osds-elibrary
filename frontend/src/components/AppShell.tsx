@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { ScrollText, Search, Settings, ShieldCheck, Sparkles, Tags, Users, X } from 'lucide-react';
+import { FolderTree, ScrollText, Search, Settings, ShieldCheck, Sparkles, Tags, Users, X } from 'lucide-react';
 import type { CurrentUser } from '@/types';
 import { getPermissions } from '@/lib/permissions';
 import { api, isGasRuntime } from '@/lib/gasClient';
@@ -8,6 +8,7 @@ import { ProfileMenu } from '@/components/ProfileMenu';
 
 const SETTINGS_MENU = [
   { route: 'SettingsUsers', icon: Users, title: 'User Management', description: 'Add, edit, and deactivate the ched.gov.ph accounts allowed into the E-Library.' },
+  { route: 'SettingsCategories', icon: FolderTree, title: 'Categories', description: 'Add, rename, and remove the filing tree used across the library.' },
   { route: 'SettingsTags', icon: Tags, title: 'Tags', description: 'Create and maintain the tag vocabulary used when filing documents.' },
   { route: 'SettingsAudit', icon: ScrollText, title: 'Audit Log', description: 'Who created, changed, or deleted what — and every question asked of the assistant.' },
   { route: 'SettingsHealth', icon: ShieldCheck, title: 'Library Health', description: 'Check every document against Drive for files deleted, binned, or moved out of place.' },

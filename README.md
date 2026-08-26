@@ -15,7 +15,8 @@ Same stack and theme as the OSDS Office Management System:
 ## Access rules
 
 - The signed-in Google account must be on the **ched.gov.ph** domain, **and**
-- it must exist in the `Users` sheet with **STATUS = ACTIVE**.
+- it must be an **active account in the Office Management System**, or listed locally in the `Users`
+  sheet with **STATUS = ACTIVE**.
 
 Domain membership alone is not enough — a ched.gov.ph account that is not on the user list is
 refused. Every account that passes both checks can browse and download the whole library and can
@@ -32,7 +33,64 @@ upload and tag documents.
 
 The **Administrator** is the host account, `osdsrecords@ched.gov.ph`, set in
 `apps-script/Code.gs` (`ADMIN_HOST_EMAIL`) and `frontend/src/lib/permissions.ts`. It cannot be
-deactivated, deleted, or renamed from the UI.
+deactivated, deleted, or renamed from the UI. Everyone else is Staff, whatever their OMS role.
+
+### Office Management System user directory
+
+The same staff use both systems, so OMS is the source of truth for who may sign in. It runs on
+Supabase, which exposes PostgREST, so this is an HTTPS read rather than a spreadsheet share.
+
+| Script Property | Value |
+|---|---|
+| `OMS_SUPABASE_URL` | `https://<project-ref>.supabase.co` |
+| `OMS_SUPABASE_KEY` | an API key that can read the resource below |
+| `OMS_USERS_RESOURCE` | optional; defaults to `users` |
+
+**Point it at a narrow view, not the `users` table.** The E-Library only needs three columns, and a
+view keeps it out of `personnel` and insulates it from OMS schema changes:
+
+```sql
+create or replace view public.staff_directory as
+  select lower(trim(email)) as email, name, 'TRUE'::text as active
+  from public.users
+  where lower(coalesce(active, '')) in ('true','1','yes','y','active')
+    and coalesce(trim(email), '') <> '';
+
+grant select on public.staff_directory to anon, authenticated;
+notify pgrst, 'reload schema';
+```
+
+Then set `OMS_USERS_RESOURCE = staff_directory` and use the least-privileged key that can read it.
+
+The name is deliberately app-neutral: the same view serves any office system that needs to know who
+works here, so each project points its own config at it rather than growing a view per app. The
+`active` test is case-insensitive on purpose — the data came from Sheets and holds a mix of `TRUE`
+and `true`, which the OMS backend itself accepts.
+
+A view runs with its **owner's** privileges, which is what lets `anon` read it while having no grant
+on `public.users` at all. If another project needs more than email/name/active, give it its own
+purpose-built view rather than widening this one — otherwise every consumer inherits the widest
+requirement.
+Avoid the service-role key: it bypasses row-level security and would give this app read/write access
+to the whole OMS database. Run `checkOmsConnection()` from the editor to verify — it reports the
+account count without ever printing the key.
+
+**Local list = overrides.** Settings > User Management shows one merged list with a **Source**
+column. A local row always wins over the OMS entry for the same address, so the Administrator can
+grant access to someone OMS does not know about, or revoke someone OMS still lists by adding them
+locally as INACTIVE. Deleting a local override hands access back if OMS still lists them as active.
+
+**Drive access for OMS accounts.** Locally-added users get their Drive permission when the
+Administrator saves them; OMS accounts never pass through that path, so the first time such an
+account signs in the app grants it (cached, roughly one Drive call per person per six hours). After
+first connecting OMS — or any time you want to reconcile in bulk — press **SYNC DRIVE ACCESS** in
+User Management, which grants everyone in one pass.
+
+**Failure behaviour.** The directory is cached for five minutes. If OMS cannot be reached the last
+good list is used and the page says so; if there is no cache, only locally-listed accounts get in —
+which always includes the Administrator, so a Supabase problem cannot lock you out of your own
+library. `syncLibraryFolderAccess` refuses to run on an empty OMS read rather than stripping
+everyone's Drive access.
 
 ## Categories
 
@@ -68,14 +126,29 @@ Year and month are deliberately **not** part of the stored category path — the
 generated ranges (1994 through the current year), so keeping them as their own fields makes
 filtering and cross-year search straightforward.
 
-Path segments are joined with `::`, not `/`, because one category is literally named
-`Office Order/Memorandum`. The taxonomy is defined twice on purpose:
+Path segments are joined with `::`, not `/`, because two categories are literally named with a
+slash (`Office Order/Memorandum`, `Audit Query/Observation Memorandum`).
 
-- `frontend/src/lib/categories.ts` — drives the sidebar, breadcrumb, and Category dropdown
-- `apps-script/Code.gs` (`CATEGORY_LEVELS`) — server-side validation, so a stale client cannot
-  file a document under a category that does not exist
+**The taxonomy lives in the `Categories` sheet**, not in code, and the Administrator edits it at
+Settings → Categories. `DEFAULT_CATEGORIES` in `Code.gs` is only a seed: it populates an empty sheet
+on first run (and `listCategories` self-heals an empty sheet, so a deployment upgrading from the
+hard-coded taxonomy picks it up without anyone remembering to re-run setup). After that the sheet is
+the source of truth, and both the tree and the server-side validation read from it — the old
+frontend/backend drift is gone.
 
-**Keep the two in sync when the taxonomy changes.**
+Rules the backend enforces:
+
+- **Renaming refiles.** A label is part of the stored path, so renaming rewrites `category_path` on
+  every document beneath it and moves the Drive folder to match, in one transaction.
+- **Deleting is blocked** while a category holds documents or subcategories, and the error says how
+  many. Nothing is orphaned or silently hidden.
+- **Only leaves hold documents.** A category with children is a grouping node; the server refuses to
+  file a document under one, and refuses to nest a category under one that already holds documents.
+- Sibling labels must be unique, and a label cannot contain `::`.
+
+**Search shorthand comes from the sheet too.** Each category matches its own name automatically,
+plus any comma-separated aliases stored against it (`cmo`, `aom`, `foi`). Adding a category makes it
+searchable immediately — the "every category needs an alias" drift is gone by construction.
 
 ### Renaming a category
 

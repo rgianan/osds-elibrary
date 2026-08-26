@@ -1,5 +1,5 @@
 import type { LibraryDocument } from '@/types';
-import { FIRST_YEAR, MONTHS, isWithinPath, joinPath } from '@/lib/categories';
+import { FIRST_YEAR, MONTHS, getCategoryRecords, isWithinPath } from '@/lib/categories';
 import { parseTags } from '@/lib/utils';
 
 /**
@@ -10,76 +10,57 @@ import { parseTags } from '@/lib/utils';
  * text is read.
  */
 
+type CategoryAlias = { tokens: string[]; path: string };
+
+function normalize(value: string) {
+  return String(value || '').toLowerCase().replace(/[^\p{L}\p{N}\s./-]/gu, ' ');
+}
+
 /**
- * Token sequences that name a category. Longer sequences are matched first, so "joint
- * administrative order" wins over a bare "administrative order".
- *
- * A bare "AO" means a CHED Administrative Order; the joint variant must be written "JAO".
+ * Splits on slashes as well as whitespace, because two categories are literally named with one:
+ * "Office Order/Memorandum" and "Audit Query/Observation Memorandum". Without it, typing or pasting
+ * such a name leaves "order/memorandum" as a single token matching no alias, and the search silently
+ * degrades to a keyword match. Shared by the query parser and the alias builder so a category's own
+ * name always tokenizes the same way the user's typing does.
  */
-const CATEGORY_ALIASES: { tokens: string[]; path: string }[] = [
-  { tokens: ['cmo'], path: joinPath(['Issuances', 'CHED Memorandum Orders']) },
-  { tokens: ['ched', 'memorandum', 'order'], path: joinPath(['Issuances', 'CHED Memorandum Orders']) },
-  { tokens: ['memorandum', 'order'], path: joinPath(['Issuances', 'CHED Memorandum Orders']) },
+function tokenize(value: string): string[] {
+  return String(value || '')
+    .trim()
+    .split(/[\s/]+/)
+    .map((token) => normalize(token).trim())
+    .filter(Boolean);
+}
 
-  { tokens: ['cao'], path: joinPath(['Issuances', 'CHED Administrative Orders']) },
-  { tokens: ['ao'], path: joinPath(['Issuances', 'CHED Administrative Orders']) },
-  { tokens: ['ched', 'administrative', 'order'], path: joinPath(['Issuances', 'CHED Administrative Orders']) },
-  { tokens: ['administrative', 'order'], path: joinPath(['Issuances', 'CHED Administrative Orders']) },
+let aliasCache: { records: unknown; aliases: CategoryAlias[] } | null = null;
 
-  { tokens: ['jao'], path: joinPath(['Issuances', 'Joint Administrative Orders']) },
-  { tokens: ['joint', 'administrative', 'order'], path: joinPath(['Issuances', 'Joint Administrative Orders']) },
+/**
+ * Search shorthands, derived from the taxonomy the Administrator maintains rather than a hard-coded
+ * list. Each category contributes its own label words plus any extra aliases stored against it, so
+ * adding a category makes it searchable by name immediately — the drift that used to leave new
+ * categories unreachable is gone by construction.
+ *
+ * Longest token sequence first, so "joint administrative order" wins over a bare
+ * "administrative order" and "financial and physical report" over "report".
+ */
+function categoryAliases(): CategoryAlias[] {
+  const records = getCategoryRecords();
+  if (aliasCache && aliasCache.records === records) return aliasCache.aliases;
 
-  { tokens: ['jmc'], path: joinPath(['Issuances', 'Joint Memorandum Circulars']) },
-  { tokens: ['joint', 'memorandum', 'circular'], path: joinPath(['Issuances', 'Joint Memorandum Circulars']) },
+  const aliases: CategoryAlias[] = [];
+  const add = (phrase: string, path: string) => {
+    const tokens = tokenize(phrase);
+    if (tokens.length) aliases.push({ tokens, path });
+  };
 
-  { tokens: ['ja'], path: joinPath(['Issuances', 'Joint Advisories']) },
-  { tokens: ['joint', 'advisory'], path: joinPath(['Issuances', 'Joint Advisories']) },
-  { tokens: ['joint', 'advisories'], path: joinPath(['Issuances', 'Joint Advisories']) },
+  for (const record of records) {
+    add(record.label, record.path);
+    for (const extra of record.aliases.split(',')) add(extra, record.path);
+  }
 
-  { tokens: ['chairperson'], path: joinPath(['Issuances', 'Memorandum from the Office of the Chairperson']) },
-  { tokens: ['executive', 'director'], path: joinPath(['Issuances', 'Memorandum from the Office of the Executive Director']) },
-
-  { tokens: ['aom'], path: 'Audit Query/Observation Memorandum' },
-  { tokens: ['aqom'], path: 'Audit Query/Observation Memorandum' },
-  { tokens: ['audit', 'query', 'observation', 'memorandum'], path: 'Audit Query/Observation Memorandum' },
-  { tokens: ['audit', 'observation', 'memorandum'], path: 'Audit Query/Observation Memorandum' },
-  { tokens: ['audit', 'observation'], path: 'Audit Query/Observation Memorandum' },
-  { tokens: ['audit', 'query'], path: 'Audit Query/Observation Memorandum' },
-
-  { tokens: ['oo'], path: 'Office Order/Memorandum' },
-  // Three tokens once the slash is split, so the full name is consumed rather than leaving
-  // "memorandum" behind as a keyword term that every result would then have to contain.
-  { tokens: ['office', 'order', 'memorandum'], path: 'Office Order/Memorandum' },
-  { tokens: ['office', 'order'], path: 'Office Order/Memorandum' },
-
-  { tokens: ['wfp'], path: 'Work and Financial Plan' },
-  { tokens: ['work', 'and', 'financial', 'plan'], path: 'Work and Financial Plan' },
-  { tokens: ['work', 'financial', 'plan'], path: 'Work and Financial Plan' },
-
-  { tokens: ['ceb'], path: 'CEB Matters' },
-  { tokens: ['ceb', 'matters'], path: 'CEB Matters' },
-
-  { tokens: ['legal', 'bases'], path: 'Legal Bases' },
-  { tokens: ['legal', 'basis'], path: 'Legal Bases' },
-  { tokens: ['significant', 'communication'], path: 'Significant Communication' },
-  { tokens: ['physical', 'and', 'financial', 'report'], path: 'Physical and Financial Reports' },
-  // The previous wording, kept so staff who learned the old order still land in the right place.
-  { tokens: ['financial', 'and', 'physical', 'report'], path: 'Physical and Financial Reports' },
-  { tokens: ['physical', 'report'], path: 'Physical and Financial Reports' },
-  { tokens: ['financial', 'report'], path: 'Physical and Financial Reports' },
-  { tokens: ['budget'], path: 'Budget' },
-  { tokens: ['issuance'], path: 'Issuances' },
-  { tokens: ['issuances'], path: 'Issuances' },
-
-  // A bare "report" must stay last among the report aliases: the longer "financial and physical
-  // report" is matched first because the list is sorted by token count.
-  { tokens: ['report'], path: 'Reports' },
-
-  { tokens: ['complaint'], path: 'Complaints' },
-  { tokens: ['freedom', 'of', 'information'], path: 'Freedom of Information' },
-  { tokens: ['foi'], path: 'Freedom of Information' },
-  { tokens: ['position', 'paper'], path: 'Position Papers' },
-].sort((a, b) => b.tokens.length - a.tokens.length);
+  aliases.sort((a, b) => b.tokens.length - a.tokens.length);
+  aliasCache = { records, aliases };
+  return aliases;
+}
 
 export type QueryChip =
   | { kind: 'category'; label: string; value: string; tokenIndexes: number[] }
@@ -111,10 +92,6 @@ function matchesDocumentNumber(name: string, documentNumber: string) {
   return new RegExp(`\\b0*${documentNumber}\\b`).test(name);
 }
 
-function normalize(value: string) {
-  return String(value || '').toLowerCase().replace(/[^\p{L}\p{N}\s./-]/gu, ' ');
-}
-
 /** Singularize crudely so "orders" matches the "order" alias. */
 function stem(token: string) {
   return token.endsWith('s') && token.length > 3 ? token.slice(0, -1) : token;
@@ -141,7 +118,7 @@ export function parseQuery(raw: string): ParsedQuery {
   let month = '';
 
   // 1) Category aliases, longest sequence first.
-  for (const alias of CATEGORY_ALIASES) {
+  for (const alias of categoryAliases()) {
     if (categoryPath) break;
     for (let i = 0; i + alias.tokens.length <= tokens.length; i++) {
       const window = lower.slice(i, i + alias.tokens.length).map(stem);

@@ -5,12 +5,14 @@ import { SettingsUsersPage } from '@/pages/SettingsUsersPage';
 import { SettingsTagsPage } from '@/pages/SettingsTagsPage';
 import { SettingsAuditPage } from '@/pages/SettingsAuditPage';
 import { SettingsHealthPage } from '@/pages/SettingsHealthPage';
+import { SettingsCategoriesPage } from '@/pages/SettingsCategoriesPage';
 import { LoadingState } from '@/components/ui/Spinner';
 import { api } from '@/lib/gasClient';
 import { getPermissions } from '@/lib/permissions';
+import { setCategories } from '@/lib/categories';
 import type { CurrentUser } from '@/types';
 
-type Route = 'Browse' | 'SettingsUsers' | 'SettingsTags' | 'SettingsAudit' | 'SettingsHealth';
+type Route = 'Browse' | 'SettingsUsers' | 'SettingsTags' | 'SettingsAudit' | 'SettingsHealth' | 'SettingsCategories';
 
 export default function App() {
   const [user, setUser] = useState<CurrentUser | null>(null);
@@ -30,6 +32,8 @@ export default function App() {
       if (!res.user.email || !res.user.role) {
         throw new Error('Bootstrap response was malformed: user is missing email or role.');
       }
+      // Must run before anything renders: the sidebar, dialogs and search parser all read the tree.
+      setCategories(res.categories || []);
       setUser(res.user);
       setRoute('Browse');
     } catch (err) {
@@ -62,7 +66,7 @@ export default function App() {
   const permissions = getPermissions(user);
 
   function navigate(next: string) {
-    if (next === 'Browse' || next === 'SettingsUsers' || next === 'SettingsTags' || next === 'SettingsAudit' || next === 'SettingsHealth') setRoute(next);
+    if (next === 'Browse' || next === 'SettingsUsers' || next === 'SettingsTags' || next === 'SettingsAudit' || next === 'SettingsHealth' || next === 'SettingsCategories') setRoute(next);
   }
 
   // Searching or asking from a Settings page should show the results, not leave them off-screen.
@@ -94,6 +98,7 @@ export default function App() {
       {route === 'SettingsTags' && permissions.manageTags ? <SettingsTagsPage onBack={() => setRoute('Browse')} /> : null}
       {route === 'SettingsAudit' && permissions.viewAuditLog ? <SettingsAuditPage onBack={() => setRoute('Browse')} /> : null}
       {route === 'SettingsHealth' && permissions.viewLibraryHealth ? <SettingsHealthPage onBack={() => setRoute('Browse')} /> : null}
+      {route === 'SettingsCategories' && permissions.manageCategories ? <SettingsCategoriesPage onBack={() => setRoute('Browse')} /> : null}
     </AppShell>
   );
 }

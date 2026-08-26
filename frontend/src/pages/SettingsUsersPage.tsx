@@ -1,9 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ArrowLeft, Pencil, Plus, RefreshCw, Trash2, UserCog } from 'lucide-react';
-import type { UserAccount } from '@/types';
+import { AlertTriangle, ArrowLeft, Link2, Pencil, Plus, RefreshCw, Trash2, UserCog } from 'lucide-react';
+import type { OmsDirectoryStatus, UserAccount } from '@/types';
 import { api } from '@/lib/gasClient';
 import { ADMIN_HOST_EMAIL, ALLOWED_EMAIL_DOMAIN } from '@/lib/permissions';
-import { removeById, upsertById } from '@/lib/collection';
 import { normalizeEmail } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { DataTableCard, type Column } from '@/components/ui/DataTable';
@@ -24,8 +23,14 @@ function isHost(row: Partial<UserAccount>) {
   return normalizeEmail(row.email || '') === ADMIN_HOST_EMAIL;
 }
 
+/** Email, not user_id: OMS accounts have no local row and would all share an empty id. */
+function rowKey(row: UserAccount) {
+  return row.email;
+}
+
 export function SettingsUsersPage({ onBack }: { onBack: () => void }) {
   const [rows, setRows] = useState<UserAccount[]>([]);
+  const [oms, setOms] = useState<OmsDirectoryStatus | null>(null);
   const [query, setQuery] = useState('');
   const [editing, setEditing] = useState<Partial<UserAccount> | null>(null);
   const [loading, setLoading] = useState(true);
@@ -57,7 +62,9 @@ export function SettingsUsersPage({ onBack }: { onBack: () => void }) {
     setLoading(true);
     setError('');
     try {
-      setRows(await api.listUsers());
+      const directory = await api.listUsers();
+      setRows(directory.users);
+      setOms(directory.oms);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load users.');
     } finally {
@@ -78,9 +85,12 @@ export function SettingsUsersPage({ onBack }: { onBack: () => void }) {
     setSaving(true);
     setError('');
     try {
-      const saved = await api.saveUser({ ...editing, active: activeValue(editing.active) });
-      setRows((current) => upsertById(current, saved, 'user_id'));
+      await api.saveUser({ ...editing, active: activeValue(editing.active) });
       setEditing(null);
+      // Reload rather than patching in place: the list is a server-side merge of the OMS directory
+      // and the local overrides, so a local row may replace an OMS entry for the same address.
+      // Reconstructing that merge on the client would be a second, divergent implementation.
+      await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save the user.');
     } finally {
@@ -91,12 +101,11 @@ export function SettingsUsersPage({ onBack }: { onBack: () => void }) {
   async function remove(row: UserAccount) {
     if (!confirm(`Remove ${row.email} from the E-Library? They will lose access immediately.`)) return;
     setError('');
-    const snapshot = rows;
-    setRows((current) => removeById(current, row.user_id, 'user_id'));
     try {
       await api.deleteUser(row.user_id);
+      // Removing a local override can reveal an OMS entry for the same address, so re-read.
+      await load();
     } catch (err) {
-      setRows(snapshot);
       setError(err instanceof Error ? err.message : 'Failed to remove the user.');
     }
   }
@@ -113,18 +122,39 @@ export function SettingsUsersPage({ onBack }: { onBack: () => void }) {
       ),
     },
     { header: 'Email', render: (row) => row.email },
+    {
+      header: 'Source',
+      headerClassName: 'w-40',
+      render: (row) => row.source === 'OMS'
+        ? (
+          <span className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-[11px] font-semibold text-primary" title="Comes from the Office Management System. Change it there, not here.">
+            <Link2 className="h-3 w-3" /> Office Mgmt
+          </span>
+        )
+        : <span className="text-xs text-muted-foreground">Added here</span>,
+    },
     { header: 'Status', render: (row) => <StatusBadge value={activeValue(row.active) === 'TRUE' ? 'ACTIVE' : 'INACTIVE'} /> },
     {
       header: 'Actions',
       headerClassName: 'w-36',
-      render: (row) => isHost(row) ? (
-        <span className="text-xs text-muted-foreground">Protected</span>
-      ) : (
-        <div className="flex gap-2">
-          <Button type="button" size="icon" variant="outline" onClick={() => setEditing({ ...row, active: activeValue(row.active) })} title="Edit user"><Pencil className="h-4 w-4" /></Button>
-          <Button type="button" size="icon" variant="danger" onClick={() => remove(row)} title="Remove user"><Trash2 className="h-4 w-4" /></Button>
-        </div>
-      ),
+      render: (row) => {
+        if (isHost(row)) return <span className="text-xs text-muted-foreground">Protected</span>;
+        // OMS accounts have no local row to edit — they are maintained in the other system. Adding
+        // an override here with the same email is how you deactivate one for the library alone.
+        if (row.source === 'OMS') {
+          return (
+            <span className="text-xs text-muted-foreground" title="Managed in the Office Management System. To override for the E-Library, add the same email here.">
+              From Office Mgmt
+            </span>
+          );
+        }
+        return (
+          <div className="flex gap-2">
+            <Button type="button" size="icon" variant="outline" onClick={() => setEditing({ ...row, active: activeValue(row.active) })} title="Edit this account's name or status"><Pencil className="h-4 w-4" /></Button>
+            <Button type="button" size="icon" variant="danger" onClick={() => remove(row)} title="Remove this account's E-Library access"><Trash2 className="h-4 w-4" /></Button>
+          </div>
+        );
+      },
     },
   ];
 
@@ -139,8 +169,11 @@ export function SettingsUsersPage({ onBack }: { onBack: () => void }) {
       <div className="mb-4 flex items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold text-foreground">User Management</h1>
-          <p className="text-sm text-muted-foreground">
+          <p className="max-w-3xl text-sm text-muted-foreground">
             Only @{ALLOWED_EMAIL_DOMAIN} accounts listed here with an ACTIVE status can sign in to the E-Library.
+            {oms?.configured
+              ? ' Active accounts in the Office Management System get access automatically; add someone here only if they are not in that system.'
+              : null}
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
@@ -156,6 +189,18 @@ export function SettingsUsersPage({ onBack }: { onBack: () => void }) {
         </div>
       </div>
 
+      {oms?.configured && !oms.ok ? (
+        <div className="mb-4 flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-800 dark:text-amber-300">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <span>
+            {oms.stale
+              ? 'The Office Management System could not be reached, so this list is from the last successful read. Access still works, but recent changes there are not reflected yet.'
+              : 'The Office Management System could not be reached, so only accounts added here have access right now.'}
+            <span className="block text-xs opacity-80">{oms.reason}</span>
+          </span>
+        </div>
+      ) : null}
+
       {syncMessage ? (
         <div className="mb-4 rounded-md border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm text-emerald-700 dark:text-emerald-300">{syncMessage}</div>
       ) : null}
@@ -165,7 +210,7 @@ export function SettingsUsersPage({ onBack }: { onBack: () => void }) {
       <div className="mb-4 grid gap-4 md:grid-cols-3">
         <Summary label="Total Users" value={rows.length} />
         <Summary label="Active Users" value={activeUsers} />
-        <Summary label="Inactive Users" value={rows.length - activeUsers} />
+        <Summary label="From Office Mgmt" value={rows.filter((row) => row.source === 'OMS').length} />
       </div>
 
       <DataTableCard
@@ -174,7 +219,7 @@ export function SettingsUsersPage({ onBack }: { onBack: () => void }) {
         search={{ value: query, onChange: setQuery, placeholder: 'Search name, email, status...', width: '340px' }}
         columns={columns}
         rows={filtered}
-        getRowId={(row) => row.user_id}
+        getRowId={rowKey}
         loading={loading}
         emptyMessage="No users found."
         minWidth="820px"
