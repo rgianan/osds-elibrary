@@ -102,7 +102,12 @@ export function AskDialog({
                   : result.reason === 'RATE_LIMITED'
                   // The server's message names the limit and window, so show it verbatim.
                   ? result.message
-                  : 'The AI assistant is unavailable right now, so this was run as a keyword search instead.'}
+                  // The server's UNAVAILABLE messages already distinguish the cases (out of quota vs
+                  // an unreadable reply) and carry no key or endpoint detail, so show them rather than
+                  // flattening every failure into one message nobody can act on.
+                  : `The AI assistant is unavailable right now, so this was run as a keyword search instead.${
+                      result.message ? ` (${result.message})` : ''
+                    }`}
                 {' '}Close this panel to see the results.
               </span>
             </div>

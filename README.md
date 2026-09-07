@@ -118,6 +118,11 @@ Freedom of Information                                              > Year
 Position Papers                                                     > Year
 ```
 
+The document list pages at **25 / 50 / 75 / 100** per page, in both list and grid view. The choice
+is remembered per browser, and the controls only appear once a result set exceeds one page. Paging
+is presentational — the whole library is already loaded for the sidebar counts and search, so
+turning a page costs nothing.
+
 In the sidebar a category lists only the years that actually hold documents, with a
 **Show all years (1994–…)** toggle to reveal the full range for filing. A category with nothing in it
 shows "No documents yet" rather than three decades of empty rows.

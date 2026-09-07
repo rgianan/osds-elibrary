@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Download, FolderInput, LayoutGrid, List, PanelLeftClose, PanelLeftOpen, Pencil, Search, Trash2, Upload } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Download, FolderInput, LayoutGrid, List, PanelLeftClose, PanelLeftOpen, Pencil, Search, Trash2, Upload } from 'lucide-react';
 import type { CurrentUser, LibraryDocument, Tag } from '@/types';
 import { api } from '@/lib/gasClient';
 import { breadcrumbLabel, displayPath, isLeafPath, isWithinPath, joinPath, monthLabel, splitPath, yearOptions } from '@/lib/categories';
@@ -12,6 +12,7 @@ import { formatFileSize, parseTags, toDisplayDate } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { DataTable, type Column } from '@/components/ui/DataTable';
+import { Select } from '@/components/ui/select';
 import { TagChip } from '@/components/ui/StatusBadge';
 import { CategorySidebar, type LibrarySelection } from '@/components/CategorySidebar';
 import { DocumentGrid } from '@/components/DocumentGrid';
@@ -25,11 +26,23 @@ const EMPTY_SELECTION: LibrarySelection = { path: '', year: '', month: '' };
 type ViewMode = 'list' | 'grid';
 const VIEW_STORAGE_KEY = 'elibrary-view';
 
+const PAGE_SIZES = [25, 50, 75, 100];
+const PAGE_SIZE_STORAGE_KEY = 'elibrary-page-size';
+
 function readStoredView(): ViewMode {
   try {
     return localStorage.getItem(VIEW_STORAGE_KEY) === 'grid' ? 'grid' : 'list';
   } catch {
     return 'list';
+  }
+}
+
+function readStoredPageSize(): number {
+  try {
+    const stored = Number(localStorage.getItem(PAGE_SIZE_STORAGE_KEY));
+    return PAGE_SIZES.includes(stored) ? stored : PAGE_SIZES[0];
+  } catch {
+    return PAGE_SIZES[0];
   }
 }
 
@@ -63,6 +76,18 @@ export function BrowsePage({
   const [editing, setEditing] = useState<LibraryDocument | null>(null);
   const [moving, setMoving] = useState<LibraryDocument | null>(null);
   const [view, setView] = useState<ViewMode>(readStoredView);
+  const [pageSize, setPageSize] = useState<number>(readStoredPageSize);
+  const [page, setPage] = useState(0);
+
+  function changePageSize(next: number) {
+    setPageSize(next);
+    setPage(0);
+    try {
+      localStorage.setItem(PAGE_SIZE_STORAGE_KEY, String(next));
+    } catch {
+      /* the choice simply will not persist */
+    }
+  }
 
   // The rail is a permanent column on desktop and an overlay drawer below `lg`, where a 310px
   // column would leave nothing for the documents themselves.
@@ -206,6 +231,27 @@ export function BrowsePage({
       : {}),
     [selection],
   );
+
+  // Any change to what is being listed starts again at the first page — staying on page 4 of a
+  // result set that now has two pages would just show an empty table.
+  useEffect(() => { setPage(0); }, [selection, searchQuery]);
+
+  const pageCount = Math.max(1, Math.ceil(visible.length / pageSize));
+  // Clamped rather than trusted: deleting the last document on a page shrinks the result set
+  // underneath the current page number.
+  const safePage = Math.min(page, pageCount - 1);
+  const firstShown = visible.length === 0 ? 0 : safePage * pageSize + 1;
+  const lastShown = Math.min((safePage + 1) * pageSize, visible.length);
+  const pageItems = useMemo(
+    () => visible.slice(safePage * pageSize, safePage * pageSize + pageSize),
+    [visible, safePage, pageSize],
+  );
+
+  const countLabel = visible.length === 0
+    ? 'No documents'
+    : visible.length <= pageSize
+    ? `${visible.length} document${visible.length === 1 ? '' : 's'}`
+    : `Showing ${firstShown}–${lastShown} of ${visible.length}`;
 
   const emptyMessage = searching
     ? `Nothing in the library matches “${searchQuery.trim()}”.`
@@ -396,13 +442,16 @@ export function BrowsePage({
           {view === 'list' ? (
             <Card>
               <CardHeader className="flex flex-row items-center justify-between gap-4">
-                <CardTitle>{visible.length} document{visible.length === 1 ? '' : 's'}</CardTitle>
-                <ViewToggle view={view} onChange={changeView} />
+                <CardTitle>{countLabel}</CardTitle>
+                <div className="flex items-center gap-2">
+                  <PageSizeSelect value={pageSize} onChange={changePageSize} />
+                  <ViewToggle view={view} onChange={changeView} />
+                </div>
               </CardHeader>
               <CardContent>
                 <DataTable
                   columns={columns}
-                  rows={visible}
+                  rows={pageItems}
                   getRowId={(row) => row.document_id}
                   loading={loading}
                   loadingMessage="Loading documents..."
@@ -414,13 +463,14 @@ export function BrowsePage({
           ) : (
             <>
               <div className="mb-3 flex items-center justify-between gap-4">
-                <span className="text-sm font-semibold text-foreground">
-                  {visible.length} document{visible.length === 1 ? '' : 's'}
-                </span>
-                <ViewToggle view={view} onChange={changeView} />
+                <span className="text-sm font-semibold text-foreground">{countLabel}</span>
+                <div className="flex items-center gap-2">
+                  <PageSizeSelect value={pageSize} onChange={changePageSize} />
+                  <ViewToggle view={view} onChange={changeView} />
+                </div>
               </div>
               <DocumentGrid
-                documents={visible}
+                documents={pageItems}
                 user={user}
                 loading={loading}
                 emptyMessage={emptyMessage}
@@ -430,6 +480,32 @@ export function BrowsePage({
               />
             </>
           )}
+
+          {!loading && pageCount > 1 ? (
+            <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
+              <span className="text-xs tabular-nums text-muted-foreground">Page {safePage + 1} of {pageCount}</span>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setPage(Math.max(0, safePage - 1))}
+                disabled={safePage === 0}
+                title="Previous page"
+              >
+                <ChevronLeft className="h-4 w-4" /> Previous
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setPage(safePage + 1)}
+                disabled={safePage + 1 >= pageCount}
+                title="Next page"
+              >
+                Next <ChevronRight className="h-4 w-4" />
+              </Button>
+            </div>
+          ) : null}
         </div>
       </div>
 
@@ -462,6 +538,22 @@ export function BrowsePage({
         }}
       />
     </main>
+  );
+}
+
+function PageSizeSelect({ value, onChange }: { value: number; onChange: (next: number) => void }) {
+  return (
+    <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+      <span className="hidden sm:inline">Show</span>
+      <Select
+        className="h-8 w-[4.5rem] text-xs"
+        value={String(value)}
+        onChange={(e) => onChange(Number(e.target.value))}
+        title="How many documents to show per page"
+      >
+        {PAGE_SIZES.map((size) => <option key={size} value={size}>{size}</option>)}
+      </Select>
+    </label>
   );
 }
 

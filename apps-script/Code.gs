@@ -1494,7 +1494,16 @@ function askLibrary(question) {
     raw = provider.impl.complete(apiKey, prompt);
   } catch (err) {
     console.error('Ask provider failed', err);
-    return { ok: false, reason: 'UNAVAILABLE', message: 'The AI provider is unavailable or out of quota.' };
+    // The full body stays in the log — it can echo the prompt and the endpoint. The HTTP code alone
+    // is enough for an admin to tell a dead key (401) from a retired model (400) from quota (429).
+    const status = /HTTP (\d{3})/.exec(String(err && err.message)) ;
+    return {
+      ok: false,
+      reason: 'UNAVAILABLE',
+      message: status
+        ? 'The AI provider returned HTTP ' + status[1] + '.'
+        : 'The AI provider is unavailable or out of quota.',
+    };
   }
 
   const parsed = parseAskJson_(raw);
