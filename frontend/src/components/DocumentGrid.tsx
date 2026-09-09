@@ -1,12 +1,21 @@
-import { Download, FolderInput, Pencil, Trash2 } from 'lucide-react';
+import { AlertTriangle, Download, FileSearch, FolderInput, Pencil, Trash2 } from 'lucide-react';
 import type { CurrentUser, LibraryDocument } from '@/types';
 import { displayPath, monthLabel } from '@/lib/categories';
 import { fileKindFor } from '@/lib/fileKind';
 import { canModifyDocument } from '@/lib/permissions';
 import { formatFileSize, parseTags, toDisplayDate } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
+import { EmptyState } from '@/components/ui/EmptyState';
+import { Skeleton } from '@/components/ui/Skeleton';
 import { TagChip } from '@/components/ui/StatusBadge';
-import { LoadingState } from '@/components/ui/Spinner';
+import { Tooltip } from '@/components/ui/Tooltip';
+
+/**
+ * Column count climbs with the viewport so a 1080p or wider screen shows more per row rather than
+ * stretching a few cards across dead space. Shared with the loading state, so the skeletons land in
+ * exactly the grid the cards will occupy.
+ */
+const GRID_CLASS = 'grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 min-[2000px]:grid-cols-5';
 
 /**
  * Card view of the same documents the table shows. Each card leads with an icon coloured by file
@@ -17,6 +26,7 @@ export function DocumentGrid({
   documents,
   user,
   loading,
+  error,
   emptyMessage,
   onEdit,
   onMove,
@@ -25,6 +35,8 @@ export function DocumentGrid({
   documents: LibraryDocument[];
   user: CurrentUser;
   loading?: boolean;
+  /** A failed read, so an empty grid is not reported as an empty library. */
+  error?: string;
   emptyMessage: React.ReactNode;
   onEdit: (doc: LibraryDocument) => void;
   onMove: (doc: LibraryDocument) => void;
@@ -32,22 +44,29 @@ export function DocumentGrid({
 }) {
   if (loading) {
     return (
-      <div className="el-card el-themed p-10">
-        <LoadingState message="Loading documents..." />
+      <div className={GRID_CLASS} aria-busy>
+        <span className="sr-only" role="status">Loading documents...</span>
+        {Array.from({ length: 8 }, (_, i) => <DocumentCardSkeleton key={i} />)}
       </div>
     );
   }
 
   if (documents.length === 0) {
     return (
-      <div className="el-card el-themed p-10 text-center text-sm text-muted-foreground">{emptyMessage}</div>
+      <div className="el-card el-themed">
+        <EmptyState
+          icon={error ? AlertTriangle : FileSearch}
+          message={error
+            ? 'These documents could not be loaded, so nothing is shown. The message above has the details — it is not a sign that the library is empty.'
+            : emptyMessage}
+          className="py-16"
+        />
+      </div>
     );
   }
 
   return (
-    // Column count climbs with the viewport so a 1080p or wider screen shows more per row rather
-    // than stretching a few cards across dead space.
-    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 min-[2000px]:grid-cols-5">
+    <div className={GRID_CLASS}>
       {documents.map((doc) => {
         const kind = fileKindFor(doc.file_name, doc.mime_type);
         const Icon = kind.icon;
@@ -104,33 +123,67 @@ export function DocumentGrid({
             </p>
 
             <div className="mt-3 flex gap-2">
-              <a
-                href={doc.file_url || '#'}
-                target="_blank"
-                rel="noreferrer"
-                title={`Open ${doc.file_name} in a new tab`}
-                className="inline-flex h-8 flex-1 items-center justify-center gap-1.5 rounded-md border border-border bg-card text-xs font-medium text-foreground transition hover:border-primary hover:text-primary"
-              >
-                <Download className="h-3.5 w-3.5" />
-                Open
-              </a>
+              <Tooltip content={`Open ${doc.file_name} in a new tab`}>
+                <a
+                  href={doc.file_url || '#'}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="el-focus inline-flex h-8 flex-1 items-center justify-center gap-1.5 rounded-md border border-border bg-card text-xs font-medium text-foreground transition hover:border-primary hover:text-primary"
+                >
+                  <Download className="h-3.5 w-3.5" />
+                  Open
+                </a>
+              </Tooltip>
               {canModify ? (
                 <>
-                  <Button type="button" size="icon" variant="outline" onClick={() => onEdit(doc)} title="Edit this document's name, tags, or remarks">
-                    <Pencil className="h-3.5 w-3.5" />
-                  </Button>
-                  <Button type="button" size="icon" variant="outline" onClick={() => onMove(doc)} title="Move to a different category or year — the Drive file follows">
-                    <FolderInput className="h-3.5 w-3.5" />
-                  </Button>
-                  <Button type="button" size="icon" variant="danger" onClick={() => onDelete(doc)} title="Delete this document and its file from Drive">
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </Button>
+                  <Tooltip content="Edit this document's name, tags, or remarks" asLabel>
+                    <Button type="button" size="icon" variant="outline" onClick={() => onEdit(doc)}>
+                      <Pencil className="h-3.5 w-3.5" />
+                    </Button>
+                  </Tooltip>
+                  <Tooltip content="Move to a different category or year — the Drive file follows" asLabel>
+                    <Button type="button" size="icon" variant="outline" onClick={() => onMove(doc)}>
+                      <FolderInput className="h-3.5 w-3.5" />
+                    </Button>
+                  </Tooltip>
+                  <Tooltip content="Delete this document and its file from Drive" asLabel>
+                    <Button type="button" size="icon" variant="danger" onClick={() => onDelete(doc)}>
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </Button>
+                  </Tooltip>
                 </>
               ) : null}
             </div>
           </article>
         );
       })}
+    </div>
+  );
+}
+
+/** Mirrors the real card's structure — icon, title block, filing line, footer, action row. */
+function DocumentCardSkeleton() {
+  return (
+    <div className="el-card el-themed flex flex-col p-4">
+      <div className="flex items-start gap-3">
+        <Skeleton className="h-11 w-11 shrink-0 rounded-lg" />
+        <div className="min-w-0 flex-1 space-y-2">
+          <Skeleton className="h-4 w-[85%]" />
+          <Skeleton className="h-3 w-[45%]" />
+        </div>
+      </div>
+      <div className="mt-4 space-y-2">
+        <Skeleton className="h-3 w-[65%]" />
+        <Skeleton className="h-3 w-[30%]" />
+      </div>
+      <div className="mt-4 border-t border-border pt-3">
+        <Skeleton className="h-3 w-[55%]" />
+      </div>
+      <div className="mt-3 flex gap-2">
+        <Skeleton className="h-8 flex-1 rounded-md" />
+        <Skeleton className="h-8 w-8 rounded-md" />
+        <Skeleton className="h-8 w-8 rounded-md" />
+      </div>
     </div>
   );
 }

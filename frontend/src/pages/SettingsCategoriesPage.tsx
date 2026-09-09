@@ -2,17 +2,24 @@ import { useEffect, useMemo, useState } from 'react';
 import { ArrowLeft, FolderTree, Pencil, Plus, Trash2 } from 'lucide-react';
 import type { LibraryDocument } from '@/types';
 import { api } from '@/lib/gasClient';
+import { CACHE_KEYS } from '@/lib/cache';
+import { useResource } from '@/lib/useResource';
 import { displayPath, setCategories, type CategoryRecord } from '@/lib/categories';
 import { Button } from '@/components/ui/button';
+import { Callout } from '@/components/ui/Callout';
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
 import { DataTableCard, type Column } from '@/components/ui/DataTable';
 import { Dialog, DialogContent } from '@/components/ui/dialog';
 import { FieldLabel } from '@/components/ui/FieldLabel';
 import { Input } from '@/components/ui/input';
 import { Select } from '@/components/ui/select';
 import { ButtonSpinner } from '@/components/ui/Spinner';
+import { Tooltip } from '@/components/ui/Tooltip';
 import { cn } from '@/lib/utils';
 
 const BLANK: Partial<CategoryRecord> = { label: '', parent_id: '', levels: 'year', aliases: '' };
+const NO_CATEGORIES: CategoryRecord[] = [];
+const NO_DOCUMENTS: LibraryDocument[] = [];
 
 /**
  * Administrator-only editor for the document taxonomy.
@@ -23,31 +30,29 @@ const BLANK: Partial<CategoryRecord> = { label: '', parent_id: '', levels: 'year
  * document count sits in the table rather than behind a confirmation.
  */
 export function SettingsCategoriesPage({ onBack }: { onBack: () => void }) {
-  const [rows, setRows] = useState<CategoryRecord[]>([]);
-  const [documents, setDocuments] = useState<LibraryDocument[]>([]);
+  const categoriesResource = useResource<CategoryRecord[]>(
+    CACHE_KEYS.categories,
+    () => api.listCategories(),
+    { fallbackMessage: 'Failed to load categories.' },
+  );
+  const docsResource = useResource<LibraryDocument[]>(CACHE_KEYS.documents, () => api.listDocuments());
+
+  const rows = categoriesResource.data ?? NO_CATEGORIES;
+  const documents = docsResource.data ?? NO_DOCUMENTS;
+  const loading = categoriesResource.loading;
+
   const [query, setQuery] = useState('');
   const [editing, setEditing] = useState<Partial<CategoryRecord> | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [pendingDelete, setPendingDelete] = useState<CategoryRecord | null>(null);
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState('');
+  const [actionError, setActionError] = useState('');
+  const error = categoriesResource.error || actionError;
 
-  async function load() {
-    setLoading(true);
-    setError('');
-    try {
-      const [categories, docs] = await Promise.all([api.listCategories(), api.listDocuments()]);
-      setRows(categories);
-      setDocuments(docs);
-      // Keep the rest of the app (sidebar, dialogs, search) on the same tree without a reload.
-      setCategories(categories);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load categories.');
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  useEffect(() => { void load(); }, []);
+  // Whatever the tree currently is, the rest of the app (sidebar, dialogs, search) reads from the
+  // same module store — so a save here reaches them without a reload.
+  useEffect(() => {
+    if (categoriesResource.data) setCategories(categoriesResource.data);
+  }, [categoriesResource.data]);
 
   const childCount = useMemo(() => {
     const counts = new Map<string, number>();
@@ -67,30 +72,37 @@ export function SettingsCategoriesPage({ onBack }: { onBack: () => void }) {
     return rows.filter((r) => [r.label, r.path, r.aliases].join(' ').toLowerCase().includes(q));
   }, [rows, query]);
 
+  /**
+   * Left to the server rather than applied optimistically: a rename here refiles every document
+   * beneath the category and moves its Drive folder, so the row that comes back can differ from the
+   * one sent. The write invalidates both cached lists and the page re-reads what actually landed.
+   */
   async function save() {
     if (!editing) return;
     setSaving(true);
-    setError('');
+    setActionError('');
     try {
       await api.saveCategory(editing);
       setEditing(null);
-      await load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save the category.');
+      setActionError(err instanceof Error ? err.message : 'Failed to save the category.');
     } finally {
       setSaving(false);
     }
   }
 
+  /**
+   * Also not optimistic, and for a different reason: the server refuses a delete while the category
+   * still holds documents or subcategories, and its refusal *is* the answer the admin needs. A row
+   * that vanished and then reappeared carrying an error would read as a bug.
+   */
   async function remove(row: CategoryRecord) {
-    if (!confirm(`Delete the category "${row.label}"?`)) return;
-    setError('');
+    setPendingDelete(null);
+    setActionError('');
     try {
       await api.deleteCategory(row.category_id);
-      await load();
     } catch (err) {
-      // The backend refuses while documents or subcategories remain, and says how many.
-      setError(err instanceof Error ? err.message : 'Failed to delete the category.');
+      setActionError(err instanceof Error ? err.message : 'Failed to delete the category.');
     }
   }
 
@@ -137,16 +149,30 @@ export function SettingsCategoriesPage({ onBack }: { onBack: () => void }) {
       header: 'Actions',
       headerClassName: 'w-36',
       cellClassName: 'align-top',
-      render: (row) => (
-        <div className="flex gap-2">
-          <Button type="button" size="icon" variant="outline" onClick={() => setEditing({ ...row })} title="Rename this category, change where it sits, or edit its search shorthand">
-            <Pencil className="h-4 w-4" />
-          </Button>
-          <Button type="button" size="icon" variant="danger" onClick={() => remove(row)} title="Delete this category — only possible once it holds no documents or subcategories">
-            <Trash2 className="h-4 w-4" />
-          </Button>
-        </div>
-      ),
+      render: (row) => {
+        const held = documentCount.get(row.path) || 0;
+        const children = childCount.get(row.category_id) || 0;
+        const blocked = held > 0 || children > 0;
+        return (
+          <div className="flex gap-2">
+            <Tooltip content="Rename this category, change where it sits, or edit its search shorthand" asLabel>
+              <Button type="button" size="icon" variant="outline" onClick={() => setEditing({ ...row })}>
+                <Pencil className="h-4 w-4" />
+              </Button>
+            </Tooltip>
+            <Tooltip
+              content={blocked
+                ? `Cannot be deleted yet — it still holds ${held} document${held === 1 ? '' : 's'} and ${children} subcategor${children === 1 ? 'y' : 'ies'}`
+                : 'Delete this category'}
+              asLabel
+            >
+              <Button type="button" size="icon" variant="danger" onClick={() => setPendingDelete(row)}>
+                <Trash2 className="h-4 w-4" />
+              </Button>
+            </Tooltip>
+          </div>
+        );
+      },
     },
   ];
 
@@ -168,24 +194,30 @@ export function SettingsCategoriesPage({ onBack }: { onBack: () => void }) {
             documents or subcategories.
           </p>
         </div>
-        <Button onClick={() => setEditing({ ...BLANK })} className="shrink-0" title="Add a category to the filing tree">
-          <Plus className="h-4 w-4" /> ADD CATEGORY
-        </Button>
+        <Tooltip content="Add a category to the filing tree">
+          <Button onClick={() => setEditing({ ...BLANK })} className="shrink-0">
+            <Plus className="h-4 w-4" /> ADD CATEGORY
+          </Button>
+        </Tooltip>
       </div>
 
-      {error ? (
-        <div className="mb-4 rounded-md border border-rose-500/30 bg-rose-500/10 p-3 text-sm text-rose-700 dark:text-rose-300">{error}</div>
-      ) : null}
+      {error ? <Callout tone="error" className="mb-4">{error}</Callout> : null}
 
       <DataTableCard
-        title={`${rows.length} categories`}
+        title={loading
+          ? 'Loading categories...'
+          : categoriesResource.error && !categoriesResource.data
+          ? 'Categories'
+          : `${rows.length.toLocaleString()} categories`}
         titleIcon={FolderTree}
         search={{ value: query, onChange: setQuery, placeholder: 'Search name, path, shorthand...', width: '320px' }}
         columns={columns}
         rows={filtered}
         getRowId={(row) => row.category_id}
         loading={loading}
-        emptyMessage="No categories yet."
+        error={categoriesResource.error}
+        emptyMessage={query.trim() ? `No category matches “${query.trim()}”.` : 'No categories yet.'}
+        emptyIcon={FolderTree}
         minWidth="1000px"
       />
 
@@ -257,6 +289,22 @@ export function SettingsCategoriesPage({ onBack }: { onBack: () => void }) {
           </div>
         </DialogContent>
       </Dialog>
+
+      <ConfirmDialog
+        open={pendingDelete !== null}
+        onOpenChange={(open) => { if (!open) setPendingDelete(null); }}
+        title="Delete category"
+        confirmLabel="Delete category"
+        onConfirm={() => { if (pendingDelete) void remove(pendingDelete); }}
+      >
+        <p>
+          Delete the category <span className="font-semibold">{pendingDelete?.label}</span>?
+        </p>
+        <p className="mt-2 text-muted-foreground">
+          It disappears from the sidebar, the upload dialog, and search. The server refuses while it still holds
+          documents or subcategories.
+        </p>
+      </ConfirmDialog>
     </main>
   );
 }

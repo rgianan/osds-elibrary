@@ -416,6 +416,49 @@ Drive service (declared in `appsscript.json` as `Drive` v3). If that service is 
 back to `DriveApp.addViewer`, which also does not notify — the advanced service is used so the
 behaviour is guaranteed rather than incidental.
 
+## Loading, caching, and feedback
+
+Every list the app shows costs a `google.script.run` round trip — the better part of a second even
+when nothing has changed. Four pieces work together so that cost is paid as rarely as possible and
+is legible when it is paid.
+
+**Caching.** `src/lib/cache.ts` holds one entry per list — documents, tags, categories, users —
+and `useResource` binds a component to one of them. A page paints from memory first and
+revalidates behind the content, so walking Library → Settings → Library no longer refetches or
+blanks the table. The cache lives in memory only, never `localStorage`: the lists include Drive
+URLs and the staff directory, and a stale copy surviving a browser restart would be worse than a
+slower first paint. Signing in as a different account clears it outright.
+
+Writes do not clear entries, they mark them stale, so the current list stays on screen while the
+fresh one is fetched. Which keys a write touches is declared in `gasClient.ts` — renaming a tag
+rewrites it across every document, and renaming a category refiles them, so both invalidate the
+document list as well as their own.
+
+**Skeletons.** A first load draws placeholder rows or cards in the shape of the content instead of
+a spinner, so nothing jumps when the data lands. Placeholder widths are fixed rather than random —
+a skeleton that reshuffles on re-render reads as a bug. The region carries `aria-busy` and a single
+live message, so a screen reader hears "Loading documents" once rather than a wall of empty boxes.
+Counts stay silent while a skeleton is up, and again when a read fails: a card cannot say "No
+entries" above rows that have simply not arrived yet, and a failed read must never render as "No
+users yet. Use ADD USER to grant the first account access." — an admin could act on that. Tables
+take the read's error and say so instead; the user summary tiles show a dash rather than zero.
+
+**Optimistic updates.** Deleting a document, a tag, or a user applies immediately and rolls back to
+a snapshot of the whole list if the server refuses — the whole list, because restoring a single row
+would lose its place in the sort. Three writes are deliberately *not* optimistic, and the reasons
+are worth keeping: saving a user goes through a server-side merge of the OMS directory with the
+local overrides, which the client would have to reimplement to predict; saving a category can
+refile every document beneath it; and deleting a category is *supposed* to fail while it still
+holds documents, so a row that vanished and came back with an error would read as a bug rather
+than as the answer.
+
+**Tooltips.** `src/components/ui/Tooltip.tsx` replaces the `title` attribute on the controls that
+depended on one — most of the icon buttons have no visible text at all. It shows on focus as well
+as hover, in the app's theme, and renders into `document.body` so the table and the category rail
+cannot clip it. Icon-only controls pass `asLabel`, which makes the same text the accessible name.
+The delay is longer on dense lists (the category rail, the tag picker) than on toolbars, so
+scanning down a list does not fire a tip at every row.
+
 ## Local development
 
 ```bash

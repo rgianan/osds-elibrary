@@ -1,10 +1,14 @@
 import { useState } from 'react';
-import { ArrowLeft, CheckCircle2, RefreshCw, ShieldAlert } from 'lucide-react';
+import { ArrowLeft, CheckCircle2, RefreshCw, ShieldAlert, ShieldCheck } from 'lucide-react';
 import type { IntegrityProblem, IntegrityReport } from '@/types';
 import { api } from '@/lib/gasClient';
 import { Button } from '@/components/ui/button';
+import { Callout } from '@/components/ui/Callout';
 import { DataTableCard, type Column } from '@/components/ui/DataTable';
+import { EmptyState } from '@/components/ui/EmptyState';
+import { Skeleton } from '@/components/ui/Skeleton';
 import { ButtonSpinner } from '@/components/ui/Spinner';
+import { Tooltip } from '@/components/ui/Tooltip';
 import { cn } from '@/lib/utils';
 
 const ISSUE_LABEL: Record<string, string> = {
@@ -82,32 +86,43 @@ export function SettingsHealthPage({ onBack }: { onBack: () => void }) {
             failed part-way.
           </p>
         </div>
-        <Button onClick={run} disabled={running} className="shrink-0" title="Compare every document against its Drive file">
-          {running ? <ButtonSpinner label="Checking..." /> : <><RefreshCw className="h-4 w-4" /> RUN CHECK</>}
-        </Button>
+        <Tooltip content="Compare every document against its Drive file. Nothing is changed.">
+          <Button onClick={run} disabled={running} className="shrink-0">
+            {running ? <ButtonSpinner label="Checking..." /> : <><RefreshCw className="h-4 w-4" /> RUN CHECK</>}
+          </Button>
+        </Tooltip>
       </div>
 
-      {error ? (
-        <div className="mb-4 rounded-md border border-rose-500/30 bg-rose-500/10 p-3 text-sm text-rose-700 dark:text-rose-300">{error}</div>
+      {error ? <Callout tone="error" className="mb-4">{error}</Callout> : null}
+
+      {report && !running ? (
+        <Callout
+          tone={report.ok ? 'success' : 'warning'}
+          icon={report.ok ? CheckCircle2 : ShieldAlert}
+          className="mb-4"
+        >
+          {report.message}
+        </Callout>
       ) : null}
 
-      {report ? (
-        <div
-          className={cn(
-            'mb-4 flex items-start gap-2 rounded-md border p-3 text-sm',
-            report.ok
-              ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
-              : 'border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300',
-          )}
-        >
-          {report.ok ? <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" /> : <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" />}
-          <span>{report.message}</span>
+      {/*
+        The check walks every document against Drive one file at a time, so on a full library it is
+        the longest-running action in the app. A skeleton of the report it is about to produce says
+        more about the wait than a spinning button does.
+      */}
+      {running ? (
+        <div className="el-card el-themed p-5" aria-busy>
+          <span className="sr-only" role="status">Checking the library against Drive...</span>
+          <Skeleton className="mb-4 h-4 w-64" />
+          <div className="space-y-3">
+            {Array.from({ length: 5 }, (_, i) => <Skeleton key={i} className="h-9 w-full" />)}
+          </div>
         </div>
       ) : null}
 
-      {report && report.problems.length > 0 ? (
+      {report && !running && report.problems.length > 0 ? (
         <DataTableCard
-          title={`${report.problems.length} of ${report.checked} need attention`}
+          title={`${report.problems.length.toLocaleString()} of ${report.checked.toLocaleString()} need attention`}
           titleIcon={ShieldAlert}
           columns={columns}
           rows={report.problems}
@@ -118,8 +133,12 @@ export function SettingsHealthPage({ onBack }: { onBack: () => void }) {
       ) : null}
 
       {!report && !running ? (
-        <div className="el-card el-themed p-10 text-center text-sm text-muted-foreground">
-          Run the check to compare the library against Drive. Nothing is changed — this only reports.
+        <div className="el-card el-themed">
+          <EmptyState
+            icon={ShieldCheck}
+            message="Run the check to compare the library against Drive. Nothing is changed — this only reports."
+            className="py-14"
+          />
         </div>
       ) : null}
     </main>

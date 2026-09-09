@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { BookOpen, Check, ChevronDown, ExternalLink, Monitor, Moon, Sun } from 'lucide-react';
 import type { CurrentUser } from '@/types';
 import { useTheme, type ThemePreference } from '@/lib/theme';
+import { Tooltip } from '@/components/ui/Tooltip';
 import { cn } from '@/lib/utils';
 
 const THEME_OPTIONS: { value: ThemePreference; icon: typeof Sun; label: string; hint: string }[] = [
@@ -60,23 +61,25 @@ export function ProfileMenu({ user }: { user: CurrentUser }) {
 
   return (
     <div className="relative" ref={containerRef}>
-      <button
-        type="button"
-        onClick={() => setOpen((value) => !value)}
-        aria-haspopup="true"
-        aria-expanded={open}
-        className={cn(
-          'flex items-center gap-2 rounded-full border py-1 pl-1 pr-2 text-sm transition',
-          open ? 'border-primary/40 bg-accent' : 'border-border hover:bg-accent',
-        )}
-        title={user.email}
-      >
-        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary text-[11px] font-bold text-primary-foreground">
-          {initialsOf(user.name, user.email)}
-        </span>
-        <span className="hidden max-w-[10rem] truncate font-medium text-foreground lg:block">{user.name}</span>
-        <ChevronDown className={cn('h-3.5 w-3.5 text-muted-foreground transition', open && 'rotate-180')} />
-      </button>
+      {/* The name is hidden below `lg` and truncated above it, so the address is worth a tip. */}
+      <Tooltip content={`${user.name} · ${user.email}`} side="bottom">
+        <button
+          type="button"
+          onClick={() => setOpen((value) => !value)}
+          aria-haspopup="true"
+          aria-expanded={open}
+          className={cn(
+            'el-focus flex items-center gap-2 rounded-full border py-1 pl-1 pr-2 text-sm transition',
+            open ? 'border-primary/40 bg-accent' : 'border-border hover:bg-accent',
+          )}
+        >
+          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary text-[11px] font-bold text-primary-foreground">
+            {initialsOf(user.name, user.email)}
+          </span>
+          <span className="hidden max-w-[10rem] truncate font-medium text-foreground lg:block">{user.name}</span>
+          <ChevronDown className={cn('h-3.5 w-3.5 text-muted-foreground transition', open && 'rotate-180')} />
+        </button>
+      </Tooltip>
 
       {open ? (
         <div
@@ -90,7 +93,7 @@ export function ProfileMenu({ user }: { user: CurrentUser }) {
             </span>
             <div className="min-w-0">
               <div className="truncate text-sm font-semibold text-foreground">{user.name}</div>
-              <div className="truncate text-xs text-muted-foreground" title={user.email}>{user.email}</div>
+              <div className="truncate text-xs text-muted-foreground">{user.email}</div>
             </div>
           </div>
 
@@ -108,8 +111,7 @@ export function ProfileMenu({ user }: { user: CurrentUser }) {
             target="_blank"
             rel="noreferrer"
             onClick={() => setOpen(false)}
-            title="Open the E-Library user manual in a new tab"
-            className="mt-3 flex items-center gap-2.5 rounded-md px-2 py-2 text-sm text-foreground/90 transition hover:bg-accent"
+            className="el-focus mt-3 flex items-center gap-2.5 rounded-md px-2 py-2 text-sm text-foreground/90 transition hover:bg-accent"
           >
             <BookOpen className="h-4 w-4 shrink-0" />
             <span className="min-w-0 flex-1">
@@ -135,10 +137,9 @@ export function ProfileMenu({ user }: { user: CurrentUser }) {
                     type="button"
                     role="radio"
                     aria-checked={active}
-                    title={option.hint}
                     onClick={() => setPreference(option.value)}
                     className={cn(
-                      'flex w-full items-center gap-2.5 rounded-md px-2 py-2 text-left text-sm transition',
+                      'el-focus flex w-full items-center gap-2.5 rounded-md px-2 py-2 text-left text-sm transition',
                       active ? 'bg-primary/10 font-medium text-primary' : 'text-foreground/90 hover:bg-accent',
                     )}
                   >

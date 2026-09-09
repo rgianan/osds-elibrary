@@ -6,8 +6,10 @@ import { SettingsTagsPage } from '@/pages/SettingsTagsPage';
 import { SettingsAuditPage } from '@/pages/SettingsAuditPage';
 import { SettingsHealthPage } from '@/pages/SettingsHealthPage';
 import { SettingsCategoriesPage } from '@/pages/SettingsCategoriesPage';
-import { LoadingState } from '@/components/ui/Spinner';
+import { AppSkeleton } from '@/components/AppSkeleton';
+import { Callout } from '@/components/ui/Callout';
 import { api } from '@/lib/gasClient';
+import { CACHE_KEYS, clearCache, put } from '@/lib/cache';
 import { getPermissions } from '@/lib/permissions';
 import { setCategories } from '@/lib/categories';
 import type { CurrentUser } from '@/types';
@@ -25,6 +27,9 @@ export default function App() {
   const bootstrap = useCallback(async () => {
     try {
       setError('');
+      // Re-bootstrapping means the signed-in account may have changed; nothing cached for the old
+      // one may be reused, and the fresh categories below are what seeds the empty cache.
+      clearCache();
       const res = await api.getBootstrap();
       if (!res || typeof res !== 'object' || !res.user) {
         throw new Error('Bootstrap response was malformed: missing user.');
@@ -34,6 +39,8 @@ export default function App() {
       }
       // Must run before anything renders: the sidebar, dialogs and search parser all read the tree.
       setCategories(res.categories || []);
+      // Bootstrap already carries the taxonomy, so the Categories page opens without re-reading it.
+      put(CACHE_KEYS.categories, res.categories || []);
       setUser(res.user);
       setRoute('Browse');
     } catch (err) {
@@ -47,21 +54,15 @@ export default function App() {
   if (error) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-background p-8">
-        <div className="max-w-lg rounded-lg border border-rose-500/30 bg-rose-500/10 p-5 text-rose-800 dark:text-rose-300">
-          <div className="mb-1 text-sm font-semibold">Cannot open the OSDS E-Library</div>
-          <div className="text-sm">{error}</div>
-        </div>
+        <Callout tone="error" className="max-w-lg p-5">
+          <div className="mb-1 font-semibold">Cannot open the OSDS E-Library</div>
+          <div>{error}</div>
+        </Callout>
       </div>
     );
   }
 
-  if (!user) {
-    return (
-      <div className="flex min-h-screen items-center justify-center bg-background">
-        <LoadingState size="lg" message="Loading OSDS E-Library..." />
-      </div>
-    );
-  }
+  if (!user) return <AppSkeleton />;
 
   const permissions = getPermissions(user);
 

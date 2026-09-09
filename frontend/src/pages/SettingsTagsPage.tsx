@@ -1,38 +1,38 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { ArrowLeft, Pencil, Plus, Tags, Trash2 } from 'lucide-react';
 import type { LibraryDocument, Tag } from '@/types';
 import { api } from '@/lib/gasClient';
+import { CACHE_KEYS } from '@/lib/cache';
+import { useResource } from '@/lib/useResource';
 import { removeById, upsertById } from '@/lib/collection';
 import { parseTags, toDisplayDate } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
+import { Callout } from '@/components/ui/Callout';
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
 import { DataTableCard, type Column } from '@/components/ui/DataTable';
 import { TagChip } from '@/components/ui/StatusBadge';
+import { Tooltip } from '@/components/ui/Tooltip';
 import { TagCreateDialog } from '@/components/TagCreateDialog';
 
+const NO_TAGS: Tag[] = [];
+const NO_DOCUMENTS: LibraryDocument[] = [];
+
 export function SettingsTagsPage({ onBack }: { onBack: () => void }) {
-  const [rows, setRows] = useState<Tag[]>([]);
-  const [documents, setDocuments] = useState<LibraryDocument[]>([]);
+  // Both lists are almost always already cached by the time this page opens — the library was
+  // browsed first — so it paints populated and only checks for changes behind the content.
+  const tagsResource = useResource<Tag[]>(CACHE_KEYS.tags, () => api.listTags(), { fallbackMessage: 'Failed to load tags.' });
+  const docsResource = useResource<LibraryDocument[]>(CACHE_KEYS.documents, () => api.listDocuments());
+
+  const rows = tagsResource.data ?? NO_TAGS;
+  const documents = docsResource.data ?? NO_DOCUMENTS;
+  const loading = tagsResource.loading;
+
   const [query, setQuery] = useState('');
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
+  const [actionError, setActionError] = useState('');
+  const error = tagsResource.error || actionError;
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<Tag | null>(null);
-
-  async function load() {
-    setLoading(true);
-    setError('');
-    try {
-      const [tags, docs] = await Promise.all([api.listTags(), api.listDocuments()]);
-      setRows(tags);
-      setDocuments(docs);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load tags.');
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  useEffect(() => { void load(); }, []);
+  const [pendingDelete, setPendingDelete] = useState<Tag | null>(null);
 
   // How many documents currently carry each tag — the number that makes a delete consequential.
   const usageByTag = useMemo(() => {
@@ -52,21 +52,21 @@ export function SettingsTagsPage({ onBack }: { onBack: () => void }) {
     return rows.filter((row) => [row.name, row.description].join(' ').toLowerCase().includes(q));
   }, [rows, query]);
 
+  // The number that makes the confirmation worth reading: how much a delete would actually touch.
+  const pendingDeleteUsage = pendingDelete ? usageByTag.get(pendingDelete.name.toLowerCase()) || 0 : 0;
+
   async function remove(row: Tag) {
-    const usage = usageByTag.get(row.name.toLowerCase()) || 0;
-    const warning = usage
-      ? `"${row.name}" is used by ${usage} document${usage === 1 ? '' : 's'}. Deleting it removes the tag from those documents. Continue?`
-      : `Delete the tag "${row.name}"?`;
-    if (!confirm(warning)) return;
-    setError('');
+    setPendingDelete(null);
+    setActionError('');
     const snapshot = rows;
-    setRows((current) => removeById(current, row.tag_id, 'tag_id'));
+    tagsResource.mutate(removeById(snapshot, row.tag_id, 'tag_id'));
     try {
+      // Deleting a tag also strips it from every document that carried it, which is why the write
+      // invalidates the document list too — the usage counts on this page re-read on their own.
       await api.deleteTag(row.tag_id);
-      void load();
     } catch (err) {
-      setRows(snapshot);
-      setError(err instanceof Error ? err.message : 'Failed to delete the tag.');
+      tagsResource.mutate(snapshot);
+      setActionError(err instanceof Error ? err.message : 'Failed to delete the tag.');
     }
   }
 
@@ -84,8 +84,12 @@ export function SettingsTagsPage({ onBack }: { onBack: () => void }) {
       headerClassName: 'w-36',
       render: (row) => (
         <div className="flex gap-2">
-          <Button type="button" size="icon" variant="outline" onClick={() => { setEditing(row); setDialogOpen(true); }} title="Edit tag"><Pencil className="h-4 w-4" /></Button>
-          <Button type="button" size="icon" variant="danger" onClick={() => remove(row)} title="Delete tag"><Trash2 className="h-4 w-4" /></Button>
+          <Tooltip content="Rename this tag or change its description" asLabel>
+            <Button type="button" size="icon" variant="outline" onClick={() => { setEditing(row); setDialogOpen(true); }}><Pencil className="h-4 w-4" /></Button>
+          </Tooltip>
+          <Tooltip content="Delete this tag and remove it from every document carrying it" asLabel>
+            <Button type="button" size="icon" variant="danger" onClick={() => setPendingDelete(row)}><Trash2 className="h-4 w-4" /></Button>
+          </Tooltip>
         </div>
       ),
     },
@@ -104,15 +108,14 @@ export function SettingsTagsPage({ onBack }: { onBack: () => void }) {
             The shared tag vocabulary. Staff can also create a tag directly from the upload dialog.
           </p>
         </div>
-        <Button
-          onClick={() => { setEditing(null); setDialogOpen(true); }}
-          title="Add a tag to the shared vocabulary available when filing documents"
-        >
-          <Plus className="h-4 w-4" /> ADD TAG
-        </Button>
+        <Tooltip content="Add a tag to the shared vocabulary available when filing documents">
+          <Button onClick={() => { setEditing(null); setDialogOpen(true); }}>
+            <Plus className="h-4 w-4" /> ADD TAG
+          </Button>
+        </Tooltip>
       </div>
 
-      {error ? <div className="mb-4 rounded border border-rose-500/30 bg-rose-500/10 p-3 text-sm text-rose-700 dark:text-rose-300">{error}</div> : null}
+      {error ? <Callout tone="error" className="mb-4">{error}</Callout> : null}
 
       <DataTableCard
         title="Tag Vocabulary"
@@ -122,7 +125,9 @@ export function SettingsTagsPage({ onBack }: { onBack: () => void }) {
         rows={filtered}
         getRowId={(row) => row.tag_id}
         loading={loading}
-        emptyMessage="No tags yet. Use ADD TAG to create the first one."
+        error={tagsResource.error}
+        emptyMessage={query.trim() ? `No tag matches “${query.trim()}”.` : 'No tags yet. Use ADD TAG to create the first one.'}
+        emptyIcon={Tags}
         minWidth="900px"
       />
 
@@ -130,11 +135,28 @@ export function SettingsTagsPage({ onBack }: { onBack: () => void }) {
         open={dialogOpen}
         onOpenChange={setDialogOpen}
         editing={editing}
-        onSaved={(tag) => {
-          setRows((current) => upsertById(current, tag, 'tag_id'));
-          void load();
-        }}
+        onSaved={(tag) => tagsResource.mutate((current) => upsertById(current ?? NO_TAGS, tag, 'tag_id'))}
       />
+
+      <ConfirmDialog
+        open={pendingDelete !== null}
+        onOpenChange={(open) => { if (!open) setPendingDelete(null); }}
+        title="Delete tag"
+        confirmLabel="Delete tag"
+        onConfirm={() => { if (pendingDelete) void remove(pendingDelete); }}
+      >
+        <p>
+          Delete the tag <span className="font-semibold">{pendingDelete?.name}</span>?
+        </p>
+        {pendingDeleteUsage > 0 ? (
+          <p className="mt-2 text-muted-foreground">
+            It is currently on {pendingDeleteUsage} document{pendingDeleteUsage === 1 ? '' : 's'}, and will be removed
+            from {pendingDeleteUsage === 1 ? 'it' : 'each of them'}. The documents themselves are not affected.
+          </p>
+        ) : (
+          <p className="mt-2 text-muted-foreground">No document is using it, so nothing else changes.</p>
+        )}
+      </ConfirmDialog>
     </main>
   );
 }

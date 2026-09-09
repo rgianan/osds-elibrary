@@ -4,6 +4,7 @@ import type { AskResult, LibraryDocument } from '@/types';
 import { api } from '@/lib/gasClient';
 import { displayPath, monthLabel } from '@/lib/categories';
 import { Button } from '@/components/ui/button';
+import { Callout } from '@/components/ui/Callout';
 import { Dialog, DialogContent } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { ButtonSpinner } from '@/components/ui/Spinner';
@@ -91,11 +92,10 @@ export function AskDialog({
             </Button>
           </div>
 
-          {error ? <div className="rounded border border-rose-500/30 bg-rose-500/10 p-3 text-sm text-rose-700 dark:text-rose-300">{error}</div> : null}
+          {error ? <Callout tone="error">{error}</Callout> : null}
 
           {result && !result.ok ? (
-            <div className="flex items-start gap-2 rounded border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-800 dark:text-amber-300">
-              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+            <Callout tone="warning" icon={AlertTriangle}>
               <span>
                 {result.reason === 'NO_KEY'
                   ? 'The AI assistant is not configured, so this was run as a keyword search instead.'
@@ -110,7 +110,7 @@ export function AskDialog({
                     }`}
                 {' '}Close this panel to see the results.
               </span>
-            </div>
+            </Callout>
           ) : null}
 
           {result?.ok ? (

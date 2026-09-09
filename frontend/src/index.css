@@ -74,6 +74,74 @@ body,
   .el-card-hover {
     box-shadow: 0 4px 12px hsl(var(--shadow-color) / 0.1), 0 2px 4px hsl(var(--shadow-color) / 0.06);
   }
+
+  /*
+   * The focus ring for interactive elements that are not <Button> — sidebar rows, header controls,
+   * table links. Same ring token, so a keyboard user sees one consistent indicator everywhere
+   * rather than a ring on some controls and nothing on others.
+   */
+  .el-focus {
+    @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background;
+  }
+}
+
+/*
+ * Skeleton shimmer: a highlight band sweeping across the placeholder. Painted with a background
+ * gradient rather than an overlay element so a skeleton stays a single, self-contained node.
+ */
+@keyframes elShimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+
+.el-shimmer {
+  background-image: linear-gradient(
+    90deg,
+    hsl(var(--muted)) 0%,
+    hsl(var(--accent)) 40%,
+    hsl(var(--accent)) 60%,
+    hsl(var(--muted)) 100%
+  );
+  background-size: 200% 100%;
+  animation: elShimmer 1.6s linear infinite;
+}
+
+@keyframes elTooltipIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.el-tooltip-in {
+  animation: elTooltipIn 120ms ease-out;
+}
+
+/*
+ * Honour the OS "reduce motion" setting. The shimmer and the panel animations are decorative, so
+ * they stop entirely; everything else collapses to an instant change rather than a transition.
+ * Kept to near-zero rather than `none` so transition-dependent code still receives its events.
+ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  .el-shimmer {
+    animation: none;
+    background-image: none;
+  }
 }
 
 @keyframes settingsPanelIn {

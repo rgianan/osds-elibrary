@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { ChevronDown, ChevronRight, Folder, FolderOpen, Library } from 'lucide-react';
 import { MONTHS, categoryTreeNodes, isWithinPath, joinPath, levelsForPath, type CategoryNode } from '@/lib/categories';
+import { Tooltip } from '@/components/ui/Tooltip';
 import { cn } from '@/lib/utils';
 
 export type LibrarySelection = {
@@ -18,13 +19,16 @@ type Props = {
   countFor: (selection: LibrarySelection) => number;
 };
 
-const ROW_BASE = 'flex w-full items-center gap-2 border-l-2 py-2 pr-3 text-left text-sm transition';
+/** Slow enough that scanning down the rail does not fire a tip at every row it passes. */
+const ROW_TOOLTIP_DELAY = 500;
+
+const ROW_BASE = 'el-focus flex w-full items-center gap-2 border-l-2 py-2 pr-3 text-left text-sm transition';
 const ROW_ACTIVE = 'border-primary bg-primary/10 font-semibold text-primary';
 const ROW_IDLE = 'border-transparent text-muted-foreground hover:bg-accent hover:text-foreground';
 
 /** Hover hint for a tree row: what it holds, and what clicking will do. */
 function rowTitle(label: string, count: number, action: string) {
-  const documents = count === 1 ? '1 document' : `${count} documents`;
+  const documents = count === 1 ? '1 document' : `${count.toLocaleString()} documents`;
   return `${label} — ${documents}. ${action}`;
 }
 
@@ -37,15 +41,19 @@ export function CategorySidebar({ selection, onSelect, years, countFor }: Props)
         <Library className="h-3.5 w-3.5" />
         Categories
       </div>
-      <button
-        type="button"
-        onClick={() => onSelect({ path: '', year: '', month: '' })}
-        title={rowTitle('All Documents', countFor({ path: '', year: '', month: '' }), 'Click to clear any category filter.')}
-        className={cn(ROW_BASE, 'pl-4', !selection.path ? ROW_ACTIVE : ROW_IDLE)}
+      <Tooltip
+        content={rowTitle('All Documents', countFor({ path: '', year: '', month: '' }), 'Click to clear any category filter.')}
+        delay={ROW_TOOLTIP_DELAY}
       >
-        <span className="min-w-0 flex-1">All Documents</span>
-        <Count value={countFor({ path: '', year: '', month: '' })} />
-      </button>
+        <button
+          type="button"
+          onClick={() => onSelect({ path: '', year: '', month: '' })}
+          className={cn(ROW_BASE, 'pl-4', !selection.path ? ROW_ACTIVE : ROW_IDLE)}
+        >
+          <span className="min-w-0 flex-1">All Documents</span>
+          <Count value={countFor({ path: '', year: '', month: '' })} />
+        </button>
+      </Tooltip>
       <div className="my-1 border-t border-border" />
       {categoryTreeNodes().map((node) => (
         <TreeNode
@@ -87,27 +95,32 @@ function TreeNode({
 
   return (
     <div>
-      <button
-        type="button"
-        onClick={() => {
-          setOpen(!expanded);
-          if (!hasChildren) onSelect({ path, year: '', month: '' });
-        }}
-        title={rowTitle(
+      <Tooltip
+        delay={ROW_TOOLTIP_DELAY}
+        content={rowTitle(
           node.label,
           countFor({ path, year: '', month: '' }),
           hasChildren
             ? (expanded ? 'Click to collapse its subcategories.' : 'Click to see its subcategories.')
             : 'Click to browse it, or expand a year below.',
         )}
-        className={cn(ROW_BASE, isSelected ? ROW_ACTIVE : ROW_IDLE)}
-        style={{ paddingLeft: `${16 + depth * 14}px` }}
       >
-        {expanded ? <ChevronDown className="h-3.5 w-3.5 shrink-0 opacity-60" /> : <ChevronRight className="h-3.5 w-3.5 shrink-0 opacity-60" />}
-        {expanded ? <FolderOpen className="h-4 w-4 shrink-0 opacity-70" /> : <Folder className="h-4 w-4 shrink-0 opacity-70" />}
-        <span className="min-w-0 flex-1 leading-5">{node.label}</span>
-        <Count value={countFor({ path, year: '', month: '' })} />
-      </button>
+        <button
+          type="button"
+          onClick={() => {
+            setOpen(!expanded);
+            if (!hasChildren) onSelect({ path, year: '', month: '' });
+          }}
+          aria-expanded={hasChildren ? expanded : undefined}
+          className={cn(ROW_BASE, isSelected ? ROW_ACTIVE : ROW_IDLE)}
+          style={{ paddingLeft: `${16 + depth * 14}px` }}
+        >
+          {expanded ? <ChevronDown className="h-3.5 w-3.5 shrink-0 opacity-60" /> : <ChevronRight className="h-3.5 w-3.5 shrink-0 opacity-60" />}
+          {expanded ? <FolderOpen className="h-4 w-4 shrink-0 opacity-70" /> : <Folder className="h-4 w-4 shrink-0 opacity-70" />}
+          <span className="min-w-0 flex-1 leading-5">{node.label}</span>
+          <Count value={countFor({ path, year: '', month: '' })} />
+        </button>
+      </Tooltip>
 
       {expanded && hasChildren
         ? node.children!.map((child) => (
@@ -166,17 +179,21 @@ function YearList({
           No documents yet
         </div>
       ) : null}
-      <button
-        type="button"
-        onClick={() => setShowAll((value) => !value)}
-        title={showAll
+      <Tooltip
+        delay={ROW_TOOLTIP_DELAY}
+        content={showAll
           ? 'Hide empty years and list only those holding documents'
           : 'List every year back to 1994, including empty ones, so a document can be filed there'}
-        className="w-full py-1.5 pr-3 text-left text-xs font-medium text-primary transition hover:underline"
-        style={{ paddingLeft: `${16 + depth * 14}px` }}
       >
-        {showAll ? 'Show years with documents' : `Show all years (${years[years.length - 1]}–${years[0]})`}
-      </button>
+        <button
+          type="button"
+          onClick={() => setShowAll((value) => !value)}
+          className="el-focus w-full py-1.5 pr-3 text-left text-xs font-medium text-primary transition hover:underline"
+          style={{ paddingLeft: `${16 + depth * 14}px` }}
+        >
+          {showAll ? 'Show years with documents' : `Show all years (${years[years.length - 1]}–${years[0]})`}
+        </button>
+      </Tooltip>
     </div>
   );
 }
@@ -205,39 +222,48 @@ function YearRow({
 
   return (
     <div>
-      <button
-        type="button"
-        onClick={() => {
-          if (hasMonths) setOpen(!expanded);
-          onSelect({ path, year, month: '' });
-        }}
-        title={rowTitle(year, countFor({ path, year, month: '' }), hasMonths ? 'Click to browse the year and list its months.' : 'Click to browse this year.')}
-        className={cn(ROW_BASE, 'py-1.5', isSelected ? ROW_ACTIVE : ROW_IDLE)}
-        style={{ paddingLeft: `${16 + depth * 14}px` }}
+      <Tooltip
+        delay={ROW_TOOLTIP_DELAY}
+        content={rowTitle(year, countFor({ path, year, month: '' }), hasMonths ? 'Click to browse the year and list its months.' : 'Click to browse this year.')}
       >
-        {hasMonths
-          ? (expanded ? <ChevronDown className="h-3.5 w-3.5 shrink-0 opacity-60" /> : <ChevronRight className="h-3.5 w-3.5 shrink-0 opacity-60" />)
-          : <span className="w-3.5 shrink-0" />}
-        <span className="min-w-0 flex-1 tabular-nums">{year}</span>
-        <Count value={countFor({ path, year, month: '' })} />
-      </button>
+        <button
+          type="button"
+          onClick={() => {
+            if (hasMonths) setOpen(!expanded);
+            onSelect({ path, year, month: '' });
+          }}
+          aria-expanded={hasMonths ? expanded : undefined}
+          className={cn(ROW_BASE, 'py-1.5', isSelected ? ROW_ACTIVE : ROW_IDLE)}
+          style={{ paddingLeft: `${16 + depth * 14}px` }}
+        >
+          {hasMonths
+            ? (expanded ? <ChevronDown className="h-3.5 w-3.5 shrink-0 opacity-60" /> : <ChevronRight className="h-3.5 w-3.5 shrink-0 opacity-60" />)
+            : <span className="w-3.5 shrink-0" />}
+          <span className="min-w-0 flex-1 tabular-nums">{year}</span>
+          <Count value={countFor({ path, year, month: '' })} />
+        </button>
+      </Tooltip>
 
       {expanded
         ? MONTHS.map(([value, label]) => {
             const selected = selection.path === path && selection.year === year && selection.month === value;
             return (
-              <button
+              <Tooltip
                 key={value}
-                type="button"
-                onClick={() => onSelect({ path, year, month: value })}
-                title={rowTitle(`${label} ${year}`, countFor({ path, year, month: value }), 'Click to browse this month.')}
-                className={cn(ROW_BASE, 'py-1.5', selected ? ROW_ACTIVE : ROW_IDLE)}
-                style={{ paddingLeft: `${16 + (depth + 1) * 14}px` }}
+                delay={ROW_TOOLTIP_DELAY}
+                content={rowTitle(`${label} ${year}`, countFor({ path, year, month: value }), 'Click to browse this month.')}
               >
-                <span className="w-3.5 shrink-0" />
-                <span className="min-w-0 flex-1">{label}</span>
-                <Count value={countFor({ path, year, month: value })} />
-              </button>
+                <button
+                  type="button"
+                  onClick={() => onSelect({ path, year, month: value })}
+                  className={cn(ROW_BASE, 'py-1.5', selected ? ROW_ACTIVE : ROW_IDLE)}
+                  style={{ paddingLeft: `${16 + (depth + 1) * 14}px` }}
+                >
+                  <span className="w-3.5 shrink-0" />
+                  <span className="min-w-0 flex-1">{label}</span>
+                  <Count value={countFor({ path, year, month: value })} />
+                </button>
+              </Tooltip>
             );
           })
         : null}
@@ -249,7 +275,7 @@ function Count({ value }: { value: number }) {
   if (!value) return null;
   return (
     <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[11px] font-semibold tabular-nums text-muted-foreground">
-      {value}
+      {value.toLocaleString()}
     </span>
   );
 }

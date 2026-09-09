@@ -5,11 +5,13 @@ import { api } from '@/lib/gasClient';
 import { leafPaths, levelsForPath, MONTHS, yearOptions } from '@/lib/categories';
 import { formatFileSize, joinTags, parseTags, readFileAsBase64 } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
+import { Callout } from '@/components/ui/Callout';
 import { Dialog, DialogContent } from '@/components/ui/dialog';
 import { FieldLabel } from '@/components/ui/FieldLabel';
 import { Input, Textarea } from '@/components/ui/input';
 import { Select } from '@/components/ui/select';
 import { ButtonSpinner } from '@/components/ui/Spinner';
+import { Tooltip } from '@/components/ui/Tooltip';
 import { TagPicker } from '@/components/TagPicker';
 import { TagCreateDialog } from '@/components/TagCreateDialog';
 
@@ -173,8 +175,8 @@ export function UploadDocumentDialog({
           className="w-[min(96vw,720px)]"
         >
           <div className="space-y-4 p-6">
-            {error ? <div className="rounded border border-rose-500/30 bg-rose-500/10 p-3 text-sm text-rose-700 dark:text-rose-300">{error}</div> : null}
-            {notice ? <div className="rounded border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm text-emerald-700 dark:text-emerald-300">{notice}</div> : null}
+            {error ? <Callout tone="error">{error}</Callout> : null}
+            {notice ? <Callout tone="success">{notice}</Callout> : null}
 
             <FieldLabel label="Name *">
               <Input
@@ -256,26 +258,19 @@ export function UploadDocumentDialog({
           </div>
 
           <div className="sticky bottom-0 flex justify-end gap-2 border-t border-border bg-muted p-4">
-            <Button type="button" variant="secondary" onClick={() => onOpenChange(false)} disabled={saving} title="Discard this upload and close">Cancel</Button>
+            <Button type="button" variant="secondary" onClick={() => onOpenChange(false)} disabled={saving}>Cancel</Button>
             {editing ? null : (
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => save(true)}
-                disabled={saving}
-                title="Save and stay here — the category, year, tags, and remarks are kept for the next document, so a batch can be filed one after another"
-              >
-                {saving ? <ButtonSpinner label="Saving..." /> : <><FileUp className="h-4 w-4" /> Save Another</>}
-              </Button>
+              <Tooltip content="Save and stay here — the category, year, tags, and remarks are kept for the next document, so a batch can be filed one after another">
+                <Button type="button" variant="outline" onClick={() => save(true)} disabled={saving}>
+                  {saving ? <ButtonSpinner label="Saving..." /> : <><FileUp className="h-4 w-4" /> Save Another</>}
+                </Button>
+              </Tooltip>
             )}
-            <Button
-              type="button"
-              onClick={() => save(false)}
-              disabled={saving}
-              title={editing ? 'Save the changes and close' : 'Save this document and close'}
-            >
-              {saving ? <ButtonSpinner label="Saving..." /> : 'Save'}
-            </Button>
+            <Tooltip content={editing ? 'Save the changes and close' : 'Save this document and close'}>
+              <Button type="button" onClick={() => save(false)} disabled={saving}>
+                {saving ? <ButtonSpinner label="Saving..." /> : 'Save'}
+              </Button>
+            </Tooltip>
           </div>
         </DialogContent>
       </Dialog>

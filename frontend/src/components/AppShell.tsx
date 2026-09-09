@@ -4,6 +4,7 @@ import type { CurrentUser } from '@/types';
 import { getPermissions } from '@/lib/permissions';
 import { api, isGasRuntime } from '@/lib/gasClient';
 import { cn } from '@/lib/utils';
+import { Tooltip } from '@/components/ui/Tooltip';
 import { ProfileMenu } from '@/components/ProfileMenu';
 
 const SETTINGS_MENU = [
@@ -42,19 +43,20 @@ export function AppShell({ user, activeRoute, onNavigate, onUserSwitched, search
     <div className="min-h-screen bg-background">
       <header className="sticky top-0 z-40 h-14 border-b border-border bg-card/85 backdrop-blur-md">
         <div className="flex h-full items-center gap-3 px-6">
-          <button
-            type="button"
-            onClick={() => onNavigate('Browse')}
-            className="flex shrink-0 items-center gap-2.5 text-left"
-            title="Back to the library"
-          >
-            <img
-              src="https://ik.imagekit.io/k2qmtccm6/osds_logo_alt.png?updatedAt=1694734076531"
-              alt="OSDS"
-              className="h-8 w-8 object-contain"
-            />
-            <span className="hidden text-sm font-semibold tracking-tight text-foreground sm:block">OSDS E-Library</span>
-          </button>
+          <Tooltip content="Back to the library" side="bottom">
+            <button
+              type="button"
+              onClick={() => onNavigate('Browse')}
+              className="el-focus flex shrink-0 items-center gap-2.5 rounded-md px-1 py-0.5 text-left"
+            >
+              <img
+                src="https://ik.imagekit.io/k2qmtccm6/osds_logo_alt.png?updatedAt=1694734076531"
+                alt="OSDS"
+                className="h-8 w-8 object-contain"
+              />
+              <span className="hidden text-sm font-semibold tracking-tight text-foreground sm:block">OSDS E-Library</span>
+            </button>
+          </Tooltip>
 
           <div className="mx-4 flex min-w-0 flex-1 items-center justify-center gap-2">
             <div className="relative w-full max-w-xl">
@@ -71,25 +73,28 @@ export function AppShell({ user, activeRoute, onNavigate, onUserSwitched, search
                 )}
               />
               {searchQuery ? (
-                <button
-                  type="button"
-                  onClick={() => onSearchChange('')}
-                  aria-label="Clear search"
-                  className="absolute right-2 top-1.5 rounded-full p-1 text-muted-foreground transition hover:bg-accent hover:text-foreground"
-                >
-                  <X className="h-3.5 w-3.5" />
-                </button>
+                <Tooltip content="Clear the search" side="bottom">
+                  <button
+                    type="button"
+                    onClick={() => onSearchChange('')}
+                    aria-label="Clear search"
+                    className="el-focus absolute right-2 top-1.5 rounded-full p-1 text-muted-foreground transition hover:bg-accent hover:text-foreground"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </Tooltip>
               ) : null}
             </div>
-            <button
-              type="button"
-              onClick={onAsk}
-              title="Ask a question about the library"
-              className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1.5 text-sm font-medium text-foreground transition hover:border-primary hover:text-primary"
-            >
-              <Sparkles className="h-4 w-4" />
-              <span className="hidden sm:inline">Ask</span>
-            </button>
+            <Tooltip content="Ask a question about what the library holds" side="bottom">
+              <button
+                type="button"
+                onClick={onAsk}
+                className="el-focus inline-flex shrink-0 items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1.5 text-sm font-medium text-foreground transition hover:border-primary hover:text-primary"
+              >
+                <Sparkles className="h-4 w-4" />
+                <span className="hidden sm:inline">Ask</span>
+              </button>
+            </Tooltip>
           </div>
 
           <div className="flex shrink-0 items-center justify-end gap-3">
@@ -112,7 +117,7 @@ export function AppShell({ user, activeRoute, onNavigate, onUserSwitched, search
                   )}
                   aria-haspopup="menu"
                   aria-expanded={settingsOpen}
-                  title="Administrator settings: users, tags, and the audit log"
+                  aria-label="Settings"
                 >
                   <Settings className="h-4 w-4" />
                   <span className="hidden sm:inline">Settings</span>
@@ -127,8 +132,7 @@ export function AppShell({ user, activeRoute, onNavigate, onUserSwitched, search
                         type="button"
                         role="menuitem"
                         onClick={() => { setSettingsOpen(false); onNavigate(menu.route); }}
-                        title={menu.description}
-                        className="flex w-full items-start gap-3 rounded-md border border-transparent p-3 text-left transition hover:border-primary/40 hover:bg-primary/5"
+                        className="el-focus flex w-full items-start gap-3 rounded-md border border-transparent p-3 text-left transition hover:border-primary/40 hover:bg-primary/5"
                       >
                         <menu.icon className="mt-0.5 h-5 w-5 shrink-0 text-primary" />
                         <span className="min-w-0">

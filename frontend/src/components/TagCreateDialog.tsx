@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import type { Tag } from '@/types';
 import { api } from '@/lib/gasClient';
 import { Button } from '@/components/ui/button';
+import { Callout } from '@/components/ui/Callout';
 import { Dialog, DialogContent } from '@/components/ui/dialog';
 import { FieldLabel } from '@/components/ui/FieldLabel';
 import { Input, Textarea } from '@/components/ui/input';
@@ -62,7 +63,7 @@ export function TagCreateDialog({
         className="w-[min(96vw,560px)]"
       >
         <div className="space-y-4 p-6">
-          {error ? <div className="rounded border border-rose-500/30 bg-rose-500/10 p-3 text-sm text-rose-700 dark:text-rose-300">{error}</div> : null}
+          {error ? <Callout tone="error">{error}</Callout> : null}
           <FieldLabel label="Tag Name *">
             <Input
               value={name}

@@ -3,8 +3,10 @@ import { ArrowLeft, ChevronLeft, ChevronRight, ScrollText } from 'lucide-react';
 import type { AuditEntry } from '@/types';
 import { api } from '@/lib/gasClient';
 import { Button } from '@/components/ui/button';
+import { Callout } from '@/components/ui/Callout';
 import { DataTableCard, type Column } from '@/components/ui/DataTable';
 import { Select } from '@/components/ui/select';
+import { Tooltip } from '@/components/ui/Tooltip';
 import { cn } from '@/lib/utils';
 
 const LIMITS = [25, 50, 100, 200];
@@ -100,7 +102,11 @@ export function SettingsAuditPage({ onBack }: { onBack: () => void }) {
       headerClassName: 'w-48',
       cellClassName: 'align-top whitespace-nowrap tabular-nums text-muted-foreground',
       // Seconds are kept in the tooltip: useful when reconstructing a sequence, noise in the column.
-      render: (row) => <span title={row.timestamp}>{formatStamp(row.timestamp)}</span>,
+      render: (row) => (
+        <Tooltip content={`Recorded ${row.timestamp} (Manila time)`}>
+          <span className="cursor-help">{formatStamp(row.timestamp)}</span>
+        </Tooltip>
+      ),
     },
     {
       header: 'Who',
@@ -165,23 +171,29 @@ export function SettingsAuditPage({ onBack }: { onBack: () => void }) {
         </div>
         <label className="flex shrink-0 items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
           Per page
-          <Select
-            className="h-9 w-24"
-            value={String(pageSize)}
-            title="How many entries to load at a time. Only the current page is read from the sheet."
-            onChange={(e) => { setPageSize(Number(e.target.value)); setPage(0); }}
-          >
-            {LIMITS.map((value) => <option key={value} value={value}>{value}</option>)}
-          </Select>
+          <Tooltip content="How many entries to load at a time. Only the current page is read from the sheet.">
+            <Select
+              className="h-9 w-24"
+              value={String(pageSize)}
+              aria-label="Entries per page"
+              onChange={(e) => { setPageSize(Number(e.target.value)); setPage(0); }}
+            >
+              {LIMITS.map((value) => <option key={value} value={value}>{value}</option>)}
+            </Select>
+          </Tooltip>
         </label>
       </div>
 
-      {error ? (
-        <div className="mb-4 rounded-md border border-rose-500/30 bg-rose-500/10 p-3 text-sm text-rose-700 dark:text-rose-300">{error}</div>
-      ) : null}
+      {error ? <Callout tone="error" className="mb-4">{error}</Callout> : null}
 
       <DataTableCard
-        title={total === 0 ? 'No entries' : `Showing ${firstShown}–${lastShown} of ${total}`}
+        // Not "No entries" while the skeleton is still on screen — the count is only zero because
+        // nothing has arrived yet, and stating it as a result contradicts the rows below it.
+        title={loading
+          ? 'Loading entries...'
+          : total === 0
+          ? 'No entries'
+          : `Showing ${firstShown.toLocaleString()}–${lastShown.toLocaleString()} of ${total.toLocaleString()}`}
         titleIcon={ScrollText}
         // The filter runs over the loaded page, not the whole trail — labelled so nobody reads an
         // empty result as "this never happened".
@@ -190,8 +202,11 @@ export function SettingsAuditPage({ onBack }: { onBack: () => void }) {
         rows={filtered}
         getRowId={(row) => row.audit_id}
         loading={loading}
+        error={error}
         loadingMessage="Loading the audit log..."
         emptyMessage={query ? `No entry matches “${query.trim()}”.` : 'No activity recorded yet.'}
+        emptyIcon={ScrollText}
+        skeletonRows={8}
         minWidth="1000px"
       />
 
@@ -202,29 +217,31 @@ export function SettingsAuditPage({ onBack }: { onBack: () => void }) {
           sheet is the system of record.
         </p>
 
-        <div className="flex shrink-0 items-center gap-2">
+        <nav className="flex shrink-0 items-center gap-2" aria-label="Audit log pages">
           <span className="text-xs tabular-nums text-muted-foreground">Page {page + 1} of {pageCount}</span>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={() => setPage((value) => Math.max(0, value - 1))}
-            disabled={loading || page === 0}
-            title="Go to more recent activity"
-          >
-            <ChevronLeft className="h-4 w-4" /> Newer
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={() => setPage((value) => value + 1)}
-            disabled={loading || page + 1 >= pageCount}
-            title="Go further back in the trail"
-          >
-            Older <ChevronRight className="h-4 w-4" />
-          </Button>
-        </div>
+          <Tooltip content="Go to more recent activity">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setPage((value) => Math.max(0, value - 1))}
+              disabled={loading || page === 0}
+            >
+              <ChevronLeft className="h-4 w-4" /> Newer
+            </Button>
+          </Tooltip>
+          <Tooltip content="Go further back in the trail">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setPage((value) => value + 1)}
+              disabled={loading || page + 1 >= pageCount}
+            >
+              Older <ChevronRight className="h-4 w-4" />
+            </Button>
+          </Tooltip>
+        </nav>
       </div>
     </main>
   );

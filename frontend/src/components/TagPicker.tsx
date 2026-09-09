@@ -3,6 +3,7 @@ import { Check, Plus, Search } from 'lucide-react';
 import type { Tag } from '@/types';
 import { Input } from '@/components/ui/input';
 import { TagChip } from '@/components/ui/StatusBadge';
+import { Tooltip } from '@/components/ui/Tooltip';
 import { cn } from '@/lib/utils';
 
 /**
@@ -70,37 +71,40 @@ export function TagPicker({
           filtered.map((tag) => {
             const isSelected = selected.some((name) => name.toLowerCase() === tag.name.toLowerCase());
             return (
-              <button
-                key={tag.tag_id}
-                type="button"
-                disabled={disabled}
-                onClick={() => toggle(tag.name)}
-                title={tag.description || undefined}
-                className={cn(
-                  'flex w-full items-center gap-2 rounded px-2.5 py-1.5 text-left text-sm transition',
-                  isSelected ? 'bg-primary/5 font-medium text-primary' : 'text-foreground/90 hover:bg-muted',
-                )}
-              >
-                <span className={cn('flex h-4 w-4 shrink-0 items-center justify-center rounded border', isSelected ? 'border-primary bg-primary text-white' : 'border-input')}>
-                  {isSelected ? <Check className="h-3 w-3" /> : null}
-                </span>
-                <span className="min-w-0 flex-1 truncate">{tag.name}</span>
-              </button>
+              // A tag's description is not otherwise visible here, so it is worth a tip — but at a
+              // longer delay, since running the pointer down the list crosses every row.
+              <Tooltip key={tag.tag_id} content={tag.description || ''} delay={400}>
+                <button
+                  type="button"
+                  disabled={disabled}
+                  onClick={() => toggle(tag.name)}
+                  className={cn(
+                    'el-focus flex w-full items-center gap-2 rounded px-2.5 py-1.5 text-left text-sm transition',
+                    isSelected ? 'bg-primary/5 font-medium text-primary' : 'text-foreground/90 hover:bg-muted',
+                  )}
+                >
+                  <span className={cn('flex h-4 w-4 shrink-0 items-center justify-center rounded border', isSelected ? 'border-primary bg-primary text-white' : 'border-input')}>
+                    {isSelected ? <Check className="h-3 w-3" /> : null}
+                  </span>
+                  <span className="min-w-0 flex-1 truncate">{tag.name}</span>
+                </button>
+              </Tooltip>
             );
           })
         )}
       </div>
 
-      <button
-        type="button"
-        onClick={onCreateTag}
-        disabled={disabled}
-        title="Create a tag — it joins the shared vocabulary and is selected for this document"
-        className="flex w-full items-center gap-2 border-t border-border px-3 py-2 text-left text-xs font-semibold text-primary transition hover:bg-primary/5 disabled:opacity-50"
-      >
-        <Plus className="h-3.5 w-3.5" />
-        New tag
-      </button>
+      <Tooltip content="Create a tag — it joins the shared vocabulary and is selected for this document">
+        <button
+          type="button"
+          onClick={onCreateTag}
+          disabled={disabled}
+          className="el-focus flex w-full items-center gap-2 border-t border-border px-3 py-2 text-left text-xs font-semibold text-primary transition hover:bg-primary/5 disabled:opacity-50"
+        >
+          <Plus className="h-3.5 w-3.5" />
+          New tag
+        </button>
+      </Tooltip>
     </div>
   );
 }

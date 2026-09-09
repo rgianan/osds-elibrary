@@ -4,10 +4,12 @@ import type { LibraryDocument } from '@/types';
 import { api } from '@/lib/gasClient';
 import { breadcrumbLabel, leafPaths, levelsForPath, MONTHS, yearOptions } from '@/lib/categories';
 import { Button } from '@/components/ui/button';
+import { Callout } from '@/components/ui/Callout';
 import { Dialog, DialogContent } from '@/components/ui/dialog';
 import { FieldLabel } from '@/components/ui/FieldLabel';
 import { Select } from '@/components/ui/select';
 import { ButtonSpinner } from '@/components/ui/Spinner';
+import { Tooltip } from '@/components/ui/Tooltip';
 
 /**
  * Refiles a document without reopening the whole upload form — the common case is a correctly named
@@ -76,7 +78,7 @@ export function MoveDocumentDialog({
         className="w-[min(96vw,640px)]"
       >
         <div className="space-y-4 p-6">
-          {error ? <div className="rounded border border-rose-500/30 bg-rose-500/10 p-3 text-sm text-rose-700 dark:text-rose-300">{error}</div> : null}
+          {error ? <Callout tone="error">{error}</Callout> : null}
 
           {doc ? (
             <div className="rounded-md border border-border bg-muted/50 p-3">
@@ -127,18 +129,25 @@ export function MoveDocumentDialog({
           </div>
         </div>
 
-        <div className="flex justify-end gap-2 border-t border-border bg-muted p-4">
-          <Button type="button" variant="secondary" onClick={() => onOpenChange(false)} disabled={saving} title="Leave the document where it is">
+        <div className="flex flex-wrap items-center justify-end gap-2 border-t border-border bg-muted p-4">
+          {/*
+            Said in plain text rather than in a tooltip on the Move button. A disabled button
+            takes no pointer events, so a tip attached to it can never open — the one moment
+            the explanation is needed is the one moment it would be unreachable.
+          */}
+          {unchanged && !saving ? (
+            <span className="mr-auto text-xs text-muted-foreground">
+              Pick a different category, year, or month to enable Move.
+            </span>
+          ) : null}
+          <Button type="button" variant="secondary" onClick={() => onOpenChange(false)} disabled={saving}>
             Cancel
           </Button>
-          <Button
-            type="button"
-            onClick={move}
-            disabled={saving || unchanged}
-            title={unchanged ? 'Pick a different category, year, or month first' : 'Refile the document and move its Drive file to match'}
-          >
-            {saving ? <ButtonSpinner label="Moving..." /> : <><FolderInput className="h-4 w-4" /> Move</>}
-          </Button>
+          <Tooltip content="Refile the document and move its Drive file to match">
+            <Button type="button" onClick={move} disabled={saving || unchanged}>
+              {saving ? <ButtonSpinner label="Moving..." /> : <><FolderInput className="h-4 w-4" /> Move</>}
+            </Button>
+          </Tooltip>
         </div>
       </DialogContent>
     </Dialog>

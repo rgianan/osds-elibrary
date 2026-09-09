@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ChevronLeft, ChevronRight, Download, FolderInput, LayoutGrid, List, PanelLeftClose, PanelLeftOpen, Pencil, Search, Trash2, Upload } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Download, FileSearch, FolderInput, LayoutGrid, List, PanelLeftClose, PanelLeftOpen, Pencil, Search, Trash2, Upload } from 'lucide-react';
 import type { CurrentUser, LibraryDocument, Tag } from '@/types';
 import { api } from '@/lib/gasClient';
+import { CACHE_KEYS } from '@/lib/cache';
+import { useResource } from '@/lib/useResource';
 import { breadcrumbLabel, displayPath, isLeafPath, isWithinPath, joinPath, monthLabel, splitPath, yearOptions } from '@/lib/categories';
 import { fileKindFor } from '@/lib/fileKind';
 import { canModifyDocument } from '@/lib/permissions';
@@ -10,10 +12,14 @@ import { parseQuery, removeChip, searchDocuments, type QueryChip } from '@/lib/s
 import { DESKTOP_QUERY, useMediaQuery } from '@/lib/useMediaQuery';
 import { formatFileSize, parseTags, toDisplayDate } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
+import { Callout } from '@/components/ui/Callout';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
 import { DataTable, type Column } from '@/components/ui/DataTable';
 import { Select } from '@/components/ui/select';
+import { Spinner } from '@/components/ui/Spinner';
 import { TagChip } from '@/components/ui/StatusBadge';
+import { Tooltip } from '@/components/ui/Tooltip';
 import { CategorySidebar, type LibrarySelection } from '@/components/CategorySidebar';
 import { DocumentGrid } from '@/components/DocumentGrid';
 import { UploadDocumentDialog } from '@/components/UploadDocumentDialog';
@@ -22,6 +28,9 @@ import { AskDialog } from '@/components/AskDialog';
 import { cn } from '@/lib/utils';
 
 const EMPTY_SELECTION: LibrarySelection = { path: '', year: '', month: '' };
+/** Stable identities, so a cache miss does not invalidate every downstream `useMemo`. */
+const NO_DOCUMENTS: LibraryDocument[] = [];
+const NO_TAGS: Tag[] = [];
 
 type ViewMode = 'list' | 'grid';
 const VIEW_STORAGE_KEY = 'elibrary-view';
@@ -67,14 +76,34 @@ export function BrowsePage({
   askOpen: boolean;
   onAskOpenChange: (open: boolean) => void;
 }) {
-  const [documents, setDocuments] = useState<LibraryDocument[]>([]);
-  const [tags, setTags] = useState<Tag[]>([]);
+  /**
+   * Both lists come from the shared cache: a return trip from Settings paints from memory and
+   * re-reads behind the content, instead of blanking the table for another round trip to Apps
+   * Script. `mutate` writes back through the cache, which is what makes an optimistic delete here
+   * visible to the Tags page's usage counts as well.
+   */
+  const docsResource = useResource<LibraryDocument[]>(
+    CACHE_KEYS.documents,
+    () => api.listDocuments(),
+    { fallbackMessage: 'Failed to load the library.' },
+  );
+  // The tag vocabulary is non-critical for browsing, so its failure is not surfaced as a page error.
+  const tagsResource = useResource<Tag[]>(CACHE_KEYS.tags, () => api.listTags());
+
+  const documents = docsResource.data ?? NO_DOCUMENTS;
+  const tags = tagsResource.data ?? NO_TAGS;
+  const loading = docsResource.loading;
+  // Only "refreshing" once something is on screen — before that it is just the first load.
+  const refreshing = docsResource.refreshing && !docsResource.loading;
+
   const [selection, setSelection] = useState<LibrarySelection>(EMPTY_SELECTION);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
+  // Kept apart from the load error so a failed delete does not vanish on the next background read.
+  const [actionError, setActionError] = useState('');
+  const error = docsResource.error || actionError;
   const [uploadOpen, setUploadOpen] = useState(false);
   const [editing, setEditing] = useState<LibraryDocument | null>(null);
   const [moving, setMoving] = useState<LibraryDocument | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<LibraryDocument | null>(null);
   const [view, setView] = useState<ViewMode>(readStoredView);
   const [pageSize, setPageSize] = useState<number>(readStoredPageSize);
   const [page, setPage] = useState(0);
@@ -108,29 +137,6 @@ export function BrowsePage({
       /* the choice simply will not persist */
     }
   }
-
-  const loadTags = useCallback(async () => {
-    try {
-      setTags(await api.listTags());
-    } catch {
-      /* the tag vocabulary is non-critical for browsing — leave it empty on failure */
-    }
-  }, []);
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError('');
-    try {
-      const [docs] = await Promise.all([api.listDocuments(), loadTags()]);
-      setDocuments(docs);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load the library.');
-    } finally {
-      setLoading(false);
-    }
-  }, [loadTags]);
-
-  useEffect(() => { void load(); }, [load]);
 
   /**
    * The sidebar asks for a count per category, per year, and per month — hundreds of queries on
@@ -204,18 +210,23 @@ export function BrowsePage({
     setUploadOpen(true);
   }
 
-  async function remove(row: LibraryDocument) {
-    if (!confirm(`Delete "${row.name}"? The file is also removed from the E-Library Drive folder.`)) return;
-    setError('');
-    const snapshot = documents;
-    setDocuments((current) => removeById(current, row.document_id, 'document_id'));
+  /**
+   * The row leaves the table on click rather than after the round trip. A delete that fails puts it
+   * back exactly where it was — which is why the whole list is snapshotted rather than just the row,
+   * since restoring one row would lose its position in the sort.
+   */
+  const remove = useCallback(async (row: LibraryDocument) => {
+    setPendingDelete(null);
+    setActionError('');
+    const snapshot = docsResource.data ?? NO_DOCUMENTS;
+    docsResource.mutate(removeById(snapshot, row.document_id, 'document_id'));
     try {
       await api.deleteDocument(row.document_id);
     } catch (err) {
-      setDocuments(snapshot);
-      setError(err instanceof Error ? err.message : 'Failed to delete the document.');
+      docsResource.mutate(snapshot);
+      setActionError(err instanceof Error ? err.message : 'Failed to delete the document.');
     }
-  }
+  }, [docsResource]);
 
   const heading = searching
     ? (parsed.terms.length ? `Search results for “${parsed.terms.join(' ')}”` : 'Search results')
@@ -247,11 +258,17 @@ export function BrowsePage({
     [visible, safePage, pageSize],
   );
 
-  const countLabel = visible.length === 0
+  // The zero case is only reported once it is a fact. While the skeleton rows are up the count is
+  // zero merely because nothing has arrived, and "No documents" above them would be a lie.
+  const countLabel = loading
+    ? 'Loading documents...'
+    : docsResource.error && !docsResource.data
+    ? 'Documents'
+    : visible.length === 0
     ? 'No documents'
     : visible.length <= pageSize
-    ? `${visible.length} document${visible.length === 1 ? '' : 's'}`
-    : `Showing ${firstShown}–${lastShown} of ${visible.length}`;
+    ? `${visible.length.toLocaleString()} document${visible.length === 1 ? '' : 's'}`
+    : `Showing ${firstShown.toLocaleString()}–${lastShown.toLocaleString()} of ${visible.length.toLocaleString()}`;
 
   const emptyMessage = searching
     ? `Nothing in the library matches “${searchQuery.trim()}”.`
@@ -320,20 +337,27 @@ export function BrowsePage({
       cellClassName: 'align-top',
       render: (row) => (
         <div className="flex gap-2">
-          <a
-            href={row.file_url || '#'}
-            target="_blank"
-            rel="noreferrer"
-            title="Open the file"
-            className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border bg-card text-foreground transition hover:border-primary hover:text-primary"
-          >
-            <Download className="h-4 w-4" />
-          </a>
+          <Tooltip content={`Open ${row.file_name} in a new tab`} asLabel>
+            <a
+              href={row.file_url || '#'}
+              target="_blank"
+              rel="noreferrer"
+              className="el-focus inline-flex h-8 w-8 items-center justify-center rounded-md border border-border bg-card text-foreground transition hover:border-primary hover:text-primary"
+            >
+              <Download className="h-4 w-4" />
+            </a>
+          </Tooltip>
           {canModifyDocument(user, row.uploaded_by) ? (
             <>
-              <Button type="button" size="icon" variant="outline" onClick={() => openEdit(row)} title="Edit this document's name, tags, or remarks"><Pencil className="h-4 w-4" /></Button>
-              <Button type="button" size="icon" variant="outline" onClick={() => setMoving(row)} title="Move to a different category or year — the Drive file follows"><FolderInput className="h-4 w-4" /></Button>
-              <Button type="button" size="icon" variant="danger" onClick={() => remove(row)} title="Delete this document and its file from Drive"><Trash2 className="h-4 w-4" /></Button>
+              <Tooltip content="Edit this document's name, tags, or remarks" asLabel>
+                <Button type="button" size="icon" variant="outline" onClick={() => openEdit(row)}><Pencil className="h-4 w-4" /></Button>
+              </Tooltip>
+              <Tooltip content="Move to a different category or year — the Drive file follows" asLabel>
+                <Button type="button" size="icon" variant="outline" onClick={() => setMoving(row)}><FolderInput className="h-4 w-4" /></Button>
+              </Tooltip>
+              <Tooltip content="Delete this document and its file from Drive" asLabel>
+                <Button type="button" size="icon" variant="danger" onClick={() => setPendingDelete(row)}><Trash2 className="h-4 w-4" /></Button>
+              </Tooltip>
             </>
           ) : null}
         </div>
@@ -352,20 +376,16 @@ export function BrowsePage({
             Browse, search, and file OSDS documents from 1994 to the present.
           </p>
         </div>
-        <Button
-          onClick={openUpload}
-          className="shrink-0"
-          title="Add a document to the library — PDF, Word, Excel, or image, up to 15 MB"
-        >
-          <Upload className="h-4 w-4" />
-          <span className="hidden sm:inline">UPLOAD DOCUMENT</span>
-          <span className="sm:hidden">UPLOAD</span>
-        </Button>
+        <Tooltip content="Add a document to the library — PDF, Word, Excel, or image, up to 15 MB">
+          <Button onClick={openUpload} className="shrink-0">
+            <Upload className="h-4 w-4" />
+            <span className="hidden sm:inline">UPLOAD DOCUMENT</span>
+            <span className="sm:hidden">UPLOAD</span>
+          </Button>
+        </Tooltip>
       </div>
 
-      {error ? (
-        <div className="mb-4 rounded-md border border-rose-500/30 bg-rose-500/10 p-3 text-sm text-rose-700 dark:text-rose-300">{error}</div>
-      ) : null}
+      {error ? <Callout tone="error" className="mb-4">{error}</Callout> : null}
 
       <div className="flex items-start gap-6">
         {/* Drawer backdrop, mobile only. */}
@@ -398,51 +418,56 @@ export function BrowsePage({
 
         <div className="min-w-0 flex-1">
           <div className="mb-3 flex flex-wrap items-center gap-2 text-sm">
-            <button
-              type="button"
-              onClick={() => setSidebarOpen((value) => !value)}
-              aria-expanded={sidebarOpen}
-              title={sidebarOpen ? 'Hide categories' : 'Show categories'}
-              className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-border bg-card px-2 py-1 text-xs font-medium text-muted-foreground transition hover:border-primary hover:text-primary"
-            >
-              {sidebarOpen ? <PanelLeftClose className="h-3.5 w-3.5" /> : <PanelLeftOpen className="h-3.5 w-3.5" />}
-              Categories
-            </button>
+            <Tooltip content={sidebarOpen ? 'Hide the category rail' : 'Show the category rail'}>
+              <button
+                type="button"
+                onClick={() => setSidebarOpen((value) => !value)}
+                aria-expanded={sidebarOpen}
+                className="el-focus inline-flex shrink-0 items-center gap-1.5 rounded-md border border-border bg-card px-2 py-1 text-xs font-medium text-muted-foreground transition hover:border-primary hover:text-primary"
+              >
+                {sidebarOpen ? <PanelLeftClose className="h-3.5 w-3.5" /> : <PanelLeftOpen className="h-3.5 w-3.5" />}
+                Categories
+              </button>
+            </Tooltip>
             {searching ? <Search className="h-4 w-4 text-muted-foreground" /> : null}
             <span className="font-medium text-foreground">{heading}</span>
 
             {searching
               ? parsed.chips.map((chip) => (
-                  <button
-                    key={`${chip.kind}-${chip.value}`}
-                    type="button"
-                    onClick={() => dropChip(chip)}
-                    title={`Remove the ${chip.kind} filter and search more widely`}
-                    className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2.5 py-0.5 text-xs font-medium text-primary transition hover:bg-primary/20"
-                  >
-                    <span className="uppercase opacity-60">{chip.kind}</span>
-                    {chip.label}
-                    <span aria-hidden>×</span>
-                  </button>
+                  <Tooltip key={`${chip.kind}-${chip.value}`} content={`Remove the ${chip.kind} filter and search more widely`}>
+                    <button
+                      type="button"
+                      onClick={() => dropChip(chip)}
+                      className="el-focus inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2.5 py-0.5 text-xs font-medium text-primary transition hover:bg-primary/20"
+                    >
+                      <span className="uppercase opacity-60">{chip.kind}</span>
+                      {chip.label}
+                      <span aria-hidden>×</span>
+                    </button>
+                  </Tooltip>
                 ))
               : null}
 
             {searching || selection.path ? (
-              <button
-                type="button"
-                onClick={() => { onSearchChange(''); setSelection(EMPTY_SELECTION); }}
-                title="Clear the search and the selected category, showing every document"
-                className="text-xs text-primary hover:underline"
-              >
-                Clear
-              </button>
+              <Tooltip content="Clear the search and the selected category, showing every document">
+                <button
+                  type="button"
+                  onClick={() => { onSearchChange(''); setSelection(EMPTY_SELECTION); }}
+                  className="el-focus rounded px-1 text-xs text-primary hover:underline"
+                >
+                  Clear
+                </button>
+              </Tooltip>
             ) : null}
           </div>
 
           {view === 'list' ? (
             <Card>
               <CardHeader className="flex flex-row items-center justify-between gap-4">
-                <CardTitle>{countLabel}</CardTitle>
+                <CardTitle className="flex items-center gap-2">
+                  {countLabel}
+                  <RefreshHint active={refreshing} />
+                </CardTitle>
                 <div className="flex items-center gap-2">
                   <PageSizeSelect value={pageSize} onChange={changePageSize} />
                   <ViewToggle view={view} onChange={changeView} />
@@ -454,8 +479,11 @@ export function BrowsePage({
                   rows={pageItems}
                   getRowId={(row) => row.document_id}
                   loading={loading}
+                  error={docsResource.error}
                   loadingMessage="Loading documents..."
+                  skeletonRows={Math.min(pageSize, 8)}
                   emptyMessage={emptyMessage}
+                  emptyIcon={FileSearch}
                   minWidth="1080px"
                 />
               </CardContent>
@@ -463,7 +491,10 @@ export function BrowsePage({
           ) : (
             <>
               <div className="mb-3 flex items-center justify-between gap-4">
-                <span className="text-sm font-semibold text-foreground">{countLabel}</span>
+                <span className="flex items-center gap-2 text-sm font-semibold text-foreground">
+                  {countLabel}
+                  <RefreshHint active={refreshing} />
+                </span>
                 <div className="flex items-center gap-2">
                   <PageSizeSelect value={pageSize} onChange={changePageSize} />
                   <ViewToggle view={view} onChange={changeView} />
@@ -473,38 +504,41 @@ export function BrowsePage({
                 documents={pageItems}
                 user={user}
                 loading={loading}
+                error={docsResource.error}
                 emptyMessage={emptyMessage}
                 onEdit={openEdit}
                 onMove={setMoving}
-                onDelete={remove}
+                onDelete={setPendingDelete}
               />
             </>
           )}
 
           {!loading && pageCount > 1 ? (
-            <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
+            <nav className="mt-3 flex flex-wrap items-center justify-end gap-2" aria-label="Document pages">
               <span className="text-xs tabular-nums text-muted-foreground">Page {safePage + 1} of {pageCount}</span>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => setPage(Math.max(0, safePage - 1))}
-                disabled={safePage === 0}
-                title="Previous page"
-              >
-                <ChevronLeft className="h-4 w-4" /> Previous
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => setPage(safePage + 1)}
-                disabled={safePage + 1 >= pageCount}
-                title="Next page"
-              >
-                Next <ChevronRight className="h-4 w-4" />
-              </Button>
-            </div>
+              <Tooltip content={`Show documents ${Math.max(1, (safePage - 1) * pageSize + 1)}–${safePage * pageSize}`}>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setPage(Math.max(0, safePage - 1))}
+                  disabled={safePage === 0}
+                >
+                  <ChevronLeft className="h-4 w-4" /> Previous
+                </Button>
+              </Tooltip>
+              <Tooltip content={`Show documents ${lastShown + 1}–${Math.min(lastShown + pageSize, visible.length)}`}>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setPage(safePage + 1)}
+                  disabled={safePage + 1 >= pageCount}
+                >
+                  Next <ChevronRight className="h-4 w-4" />
+                </Button>
+              </Tooltip>
+            </nav>
           ) : null}
         </div>
       </div>
@@ -515,15 +549,15 @@ export function BrowsePage({
         editing={editing}
         defaults={uploadDefaults}
         tags={tags}
-        onTagsChanged={() => { void loadTags(); }}
-        onSaved={(saved) => setDocuments((current) => upsertById(current, saved, 'document_id'))}
+        onTagsChanged={() => { void tagsResource.reload(); }}
+        onSaved={(saved) => docsResource.mutate((current) => upsertById(current ?? NO_DOCUMENTS, saved, 'document_id'))}
       />
 
       <MoveDocumentDialog
         open={moving !== null}
         onOpenChange={(next) => { if (!next) setMoving(null); }}
         document={moving}
-        onMoved={(moved) => setDocuments((current) => upsertById(current, moved, 'document_id'))}
+        onMoved={(moved) => docsResource.mutate((current) => upsertById(current ?? NO_DOCUMENTS, moved, 'document_id'))}
       />
 
       <AskDialog
@@ -537,7 +571,37 @@ export function BrowsePage({
           setSelection({ path: doc.category_path, year: doc.year, month: doc.month || '' });
         }}
       />
+
+      <ConfirmDialog
+        open={pendingDelete !== null}
+        onOpenChange={(next) => { if (!next) setPendingDelete(null); }}
+        title="Delete document"
+        confirmLabel="Delete document"
+        onConfirm={() => { if (pendingDelete) void remove(pendingDelete); }}
+      >
+        <p>
+          Delete <span className="font-semibold">{pendingDelete?.name}</span>?
+        </p>
+        <p className="mt-2 text-muted-foreground">
+          The file is also removed from the E-Library Drive folder. This cannot be undone from here.
+        </p>
+      </ConfirmDialog>
     </main>
+  );
+}
+
+/**
+ * Shown only while a re-read runs behind content that is already on screen. Deliberately small and
+ * unlabelled: the list is usable throughout, so this reports activity without implying a wait.
+ */
+function RefreshHint({ active }: { active: boolean }) {
+  if (!active) return null;
+  return (
+    <Tooltip content="Checking for changes">
+      <span className="inline-flex items-center">
+        <Spinner size="sm" label="Refreshing" className="h-3 w-3 border" />
+      </span>
+    </Tooltip>
   );
 }
 
@@ -545,43 +609,45 @@ function PageSizeSelect({ value, onChange }: { value: number; onChange: (next: n
   return (
     <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
       <span className="hidden sm:inline">Show</span>
-      <Select
-        className="h-8 w-[4.5rem] text-xs"
-        value={String(value)}
-        onChange={(e) => onChange(Number(e.target.value))}
-        title="How many documents to show per page"
-      >
-        {PAGE_SIZES.map((size) => <option key={size} value={size}>{size}</option>)}
-      </Select>
+      <Tooltip content="How many documents to show per page">
+        <Select
+          className="h-8 w-[4.5rem] text-xs"
+          value={String(value)}
+          onChange={(e) => onChange(Number(e.target.value))}
+          aria-label="Documents per page"
+        >
+          {PAGE_SIZES.map((size) => <option key={size} value={size}>{size}</option>)}
+        </Select>
+      </Tooltip>
     </label>
   );
 }
 
 function ViewToggle({ view, onChange }: { view: ViewMode; onChange: (next: ViewMode) => void }) {
-  const options: { value: ViewMode; icon: typeof List; label: string }[] = [
-    { value: 'list', icon: List, label: 'List view' },
-    { value: 'grid', icon: LayoutGrid, label: 'Grid view' },
+  const options: { value: ViewMode; icon: typeof List; label: string; hint: string }[] = [
+    { value: 'list', icon: List, label: 'List view', hint: 'List view — a row per document, with every column' },
+    { value: 'grid', icon: LayoutGrid, label: 'Grid view', hint: 'Grid view — cards, colour-coded by file type' },
   ];
   return (
     <div role="radiogroup" aria-label="View mode" className="flex items-center gap-0.5 rounded-full border border-border bg-muted/60 p-0.5">
       {options.map((option) => {
         const active = view === option.value;
         return (
-          <button
-            key={option.value}
-            type="button"
-            role="radio"
-            aria-checked={active}
-            title={option.label}
-            onClick={() => onChange(option.value)}
-            className={cn(
-              'rounded-full p-1.5 transition',
-              active ? 'bg-card text-primary shadow-sm' : 'text-muted-foreground hover:text-foreground',
-            )}
-          >
-            <option.icon className="h-4 w-4" />
-            <span className="sr-only">{option.label}</span>
-          </button>
+          <Tooltip key={option.value} content={option.hint}>
+            <button
+              type="button"
+              role="radio"
+              aria-checked={active}
+              onClick={() => onChange(option.value)}
+              className={cn(
+                'el-focus rounded-full p-1.5 transition',
+                active ? 'bg-card text-primary shadow-sm' : 'text-muted-foreground hover:text-foreground',
+              )}
+            >
+              <option.icon className="h-4 w-4" />
+              <span className="sr-only">{option.label}</span>
+            </button>
+          </Tooltip>
         );
       })}
     </div>

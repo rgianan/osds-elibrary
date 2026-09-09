@@ -43,6 +43,18 @@ export function DialogContent({
   const ctx = React.useContext(DialogContext);
   const id = React.useRef(Symbol('dialog')).current;
 
+  /**
+   * Where focus goes when this dialog closes. Captured during render rather than in the effect
+   * below, because a dialog with an `autoFocus` field has already moved focus into itself by the
+   * time effects run — the effect would capture that field and, once it unmounted, restore nothing.
+   * During render the dialog is not committed yet, so this is still the control that opened it
+   * (and, for a dialog opened from another dialog, the control inside that one).
+   */
+  const restoreFocusRef = React.useRef<HTMLElement | null>(null);
+  if (ctx?.open && !restoreFocusRef.current && typeof document !== 'undefined') {
+    restoreFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  }
+
   React.useEffect(() => {
     if (!ctx?.open) return;
     openDialogs.push(id);
@@ -56,6 +68,11 @@ export function DialogContent({
       document.removeEventListener('keydown', onKey);
       const index = openDialogs.indexOf(id);
       if (index >= 0) openDialogs.splice(index, 1);
+      // Skipped when the trigger itself is gone — deleting a row unmounts the button that opened
+      // the confirmation, and there is nothing sensible to return to.
+      const target = restoreFocusRef.current;
+      restoreFocusRef.current = null;
+      if (target && document.contains(target)) target.focus();
     };
   }, [ctx?.open, ctx?.setOpen, id]);
 

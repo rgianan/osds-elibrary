@@ -1,8 +1,9 @@
 import type { ComponentType, ReactNode } from 'react';
-import { Search } from 'lucide-react';
+import { AlertTriangle, Search } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { EmptyState } from '@/components/ui/EmptyState';
 import { Input } from '@/components/ui/input';
-import { LoadingState } from '@/components/ui/Spinner';
+import { Skeleton } from '@/components/ui/Skeleton';
 import { cn } from '@/lib/utils';
 
 export type Column<T> = {
@@ -19,25 +20,43 @@ export type DataTableProps<T> = {
   rows: T[];
   getRowId: (row: T) => string;
   loading?: boolean;
+  /**
+   * A load failure, so the table can tell "there is nothing" apart from "nothing arrived". Pass the
+   * error from the read itself, not from an action — an empty table after a failed read must not
+   * claim the collection is empty.
+   */
+  error?: string;
   emptyMessage?: ReactNode;
+  emptyIcon?: IconComponent;
   loadingMessage?: string;
+  /** Placeholder rows drawn while loading. Set close to a typical page so the height barely shifts. */
+  skeletonRows?: number;
   minWidth?: string;
   bordered?: boolean;
 };
+
+/**
+ * Placeholder cells keep the column rhythm of real content — a wide first column, narrow trailing
+ * ones — so the loading table has the same shape as the loaded one and nothing jumps on arrival.
+ */
+const SKELETON_WIDTHS = ['w-[70%]', 'w-[55%]', 'w-[40%]', 'w-[60%]', 'w-[45%]'];
 
 export function DataTable<T>({
   columns,
   rows,
   getRowId,
   loading,
+  error,
   emptyMessage = 'No data available.',
+  emptyIcon,
   loadingMessage = 'Loading...',
+  skeletonRows = 6,
   minWidth,
   bordered = true,
 }: DataTableProps<T>) {
   return (
     <div className={cn('overflow-auto', bordered && 'rounded-md border border-border')}>
-      <table className="w-full border-collapse text-sm" style={{ minWidth }}>
+      <table className="w-full border-collapse text-sm" style={{ minWidth }} aria-busy={loading || undefined}>
         <thead>
           <tr className="border-b border-border bg-muted/60 text-muted-foreground">
             {columns.map((col, i) => (
@@ -48,17 +67,34 @@ export function DataTable<T>({
           </tr>
         </thead>
         <tbody>
+          {loading
+            ? Array.from({ length: skeletonRows }, (_, rowIndex) => (
+                <tr key={`skeleton-${rowIndex}`} className="border-b border-border/60 last:border-b-0">
+                  {columns.map((_col, i) => (
+                    <td key={i} className="p-3">
+                      <Skeleton className={cn('h-4', SKELETON_WIDTHS[(rowIndex + i) % SKELETON_WIDTHS.length])} />
+                    </td>
+                  ))}
+                </tr>
+              ))
+            : null}
           {loading ? (
             <tr>
-              <td colSpan={columns.length} className="p-8">
-                <LoadingState message={loadingMessage} />
-              </td>
+              {/* The placeholder rows are decoration; this is what a screen reader is told instead. */}
+              <td colSpan={columns.length} className="sr-only" role="status">{loadingMessage}</td>
             </tr>
           ) : null}
           {!loading && rows.length === 0 ? (
             <tr>
-              <td colSpan={columns.length} className="p-8 text-center text-muted-foreground">
-                {emptyMessage}
+              <td colSpan={columns.length} className="p-0">
+                {error ? (
+                  <EmptyState
+                    icon={AlertTriangle}
+                    message="This list could not be loaded, so nothing is shown. The message above has the details — it is not a sign that the list is empty."
+                  />
+                ) : (
+                  <EmptyState icon={emptyIcon} message={emptyMessage} />
+                )}
               </td>
             </tr>
           ) : null}
